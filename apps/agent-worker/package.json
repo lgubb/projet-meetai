@@ -1,0 +1,16 @@
+{
+  "name": "@jean/agent-worker",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx src/index.ts",
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint . --max-warnings=0",
+    "test": "echo \"No tests yet\""
+  },
+  "dependencies": {
+    "@jean/shared": "workspace:*"
+  }
+}

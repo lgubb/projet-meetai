@@ -1,0 +1,19 @@
+{
+  "name": "@jean/room-worker",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx src/index.ts",
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint . --max-warnings=0",
+    "test": "node --test --import tsx src/transcription-worker.test.ts"
+  },
+  "dependencies": {
+    "@deepgram/sdk": "^5.4.0",
+    "@jean/shared": "workspace:*",
+    "@livekit/rtc-node": "^0.13.29",
+    "livekit-server-sdk": "^2.15.4"
+  }
+}

@@ -1,0 +1,375 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum UserRole {
+  OWNER
+  ADMIN
+  MEMBER
+}
+
+enum RoomStatus {
+  CREATED
+  LIVE
+  ENDED
+  ARCHIVED
+}
+
+enum ParticipantRole {
+  HOST
+  MEMBER
+  GUEST
+  OBSERVER
+  AGENT
+}
+
+enum AgentProvider {
+  NATIVE
+  MCP
+  CODEX
+  LOVABLE
+  PERPLEXITY
+  E2B
+}
+
+enum AgentTransport {
+  IN_PROCESS
+  HTTP
+  STDIO
+}
+
+enum AgentCapability {
+  ORCHESTRATION
+  RESEARCH
+  CODE_GENERATION
+  PROTOTYPING
+  TASK_PLANNING
+  ARTIFACT_GENERATION
+}
+
+enum TaskStatus {
+  PENDING
+  RUNNING
+  WAITING_FOR_APPROVAL
+  COMPLETED
+  FAILED
+  CANCELED
+}
+
+enum TaskRiskLevel {
+  LOW
+  MEDIUM
+  HIGH
+}
+
+enum ArtifactType {
+  DOCUMENT
+  CODE
+  RESEARCH
+  DIAGRAM
+  PREVIEW
+  LOG
+}
+
+enum ArtifactStatus {
+  DRAFT
+  GENERATING
+  READY
+  FAILED
+  ARCHIVED
+}
+
+enum ApprovalStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  CANCELED
+}
+
+model User {
+  id        String   @id @default(cuid())
+  email     String   @unique
+  name      String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  memberships        OrganizationMember[]
+  roomParticipants   RoomParticipant[]
+  createdRooms       Room[]               @relation("RoomCreatedByUser")
+  createdTasks       Task[]               @relation("TaskCreatedByUser")
+  createdArtifacts   Artifact[]           @relation("ArtifactCreatedByUser")
+  createdVersions    ArtifactVersion[]    @relation("ArtifactVersionCreatedByUser")
+  requestedApprovals Approval[]           @relation("ApprovalRequestedByUser")
+  decidedApprovals   Approval[]           @relation("ApprovalDecidedByUser")
+  transcriptSegments TranscriptSegment[]
+  auditLogs          AuditLog[]           @relation("AuditActorUser")
+}
+
+model Organization {
+  id        String   @id @default(cuid())
+  name      String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  members   OrganizationMember[]
+  rooms     Room[]
+  agents    Agent[]
+  auditLogs AuditLog[]
+}
+
+model OrganizationMember {
+  id             String   @id @default(cuid())
+  organizationId String
+  userId         String
+  role           UserRole @default(MEMBER)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([organizationId, userId])
+  @@index([userId])
+}
+
+model Room {
+  id              String     @id @default(cuid())
+  organizationId  String
+  createdByUserId String
+  title           String
+  status          RoomStatus @default(CREATED)
+  createdAt       DateTime   @default(now())
+  updatedAt       DateTime   @updatedAt
+  endedAt         DateTime?
+
+  organization       Organization        @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  createdByUser      User                @relation("RoomCreatedByUser", fields: [createdByUserId], references: [id])
+  participants       RoomParticipant[]
+  tasks              Task[]
+  taskEvents         TaskEvent[]
+  artifacts          Artifact[]
+  approvals          Approval[]
+  transcriptSegments TranscriptSegment[]
+  auditLogs          AuditLog[]
+
+  @@index([organizationId, status])
+  @@index([createdByUserId])
+}
+
+model RoomParticipant {
+  id       String          @id @default(cuid())
+  roomId   String
+  userId   String?
+  agentId  String?
+  role     ParticipantRole
+  joinedAt DateTime        @default(now())
+  leftAt   DateTime?
+
+  room  Room   @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  user  User?  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  agent Agent? @relation(fields: [agentId], references: [id], onDelete: Cascade)
+
+  @@unique([roomId, userId])
+  @@unique([roomId, agentId])
+  @@index([userId])
+  @@index([agentId])
+}
+
+model Agent {
+  id             String            @id @default(cuid())
+  organizationId String
+  name           String
+  provider       AgentProvider
+  capabilities   AgentCapability[]
+  createdAt      DateTime          @default(now())
+  updatedAt      DateTime          @updatedAt
+
+  organization       Organization        @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  connections        AgentConnection[]
+  roomParticipants   RoomParticipant[]
+  createdTasks       Task[]              @relation("TaskCreatedByAgent")
+  assignedTasks      Task[]              @relation("TaskAssignedAgent")
+  createdArtifacts   Artifact[]          @relation("ArtifactCreatedByAgent")
+  createdVersions    ArtifactVersion[]   @relation("ArtifactVersionCreatedByAgent")
+  requestedApprovals Approval[]          @relation("ApprovalRequestedByAgent")
+  transcriptSegments TranscriptSegment[]
+  auditLogs          AuditLog[]          @relation("AuditActorAgent")
+
+  @@index([organizationId, provider])
+}
+
+model AgentConnection {
+  id        String         @id @default(cuid())
+  agentId   String
+  transport AgentTransport
+  endpoint  String?
+  createdAt DateTime       @default(now())
+  updatedAt DateTime       @updatedAt
+
+  agent Agent @relation(fields: [agentId], references: [id], onDelete: Cascade)
+
+  @@index([agentId, transport])
+}
+
+model Task {
+  id               String        @id @default(cuid())
+  roomId           String
+  createdByUserId  String?
+  createdByAgentId String?
+  assignedAgentId  String?
+  title            String
+  description      String?
+  status           TaskStatus    @default(PENDING)
+  riskLevel        TaskRiskLevel @default(LOW)
+  createdAt        DateTime      @default(now())
+  updatedAt        DateTime      @updatedAt
+  completedAt      DateTime?
+
+  room           Room        @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  createdByUser  User?       @relation("TaskCreatedByUser", fields: [createdByUserId], references: [id])
+  createdByAgent Agent?      @relation("TaskCreatedByAgent", fields: [createdByAgentId], references: [id])
+  assignedAgent  Agent?      @relation("TaskAssignedAgent", fields: [assignedAgentId], references: [id])
+  events         TaskEvent[]
+  artifacts      Artifact[]
+  approvals      Approval[]
+
+  @@index([roomId, status])
+  @@index([createdByUserId])
+  @@index([createdByAgentId])
+  @@index([assignedAgentId, status])
+}
+
+model TaskEvent {
+  id         String   @id @default(cuid())
+  roomId     String
+  taskId     String
+  type       String
+  payload    Json?
+  occurredAt DateTime @default(now())
+
+  room Room @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  task Task @relation(fields: [taskId], references: [id], onDelete: Cascade)
+
+  @@index([roomId, occurredAt])
+  @@index([taskId, occurredAt])
+}
+
+model Artifact {
+  id               String         @id @default(cuid())
+  roomId           String
+  taskId           String?
+  createdByUserId  String?
+  createdByAgentId String?
+  type             ArtifactType
+  status           ArtifactStatus @default(DRAFT)
+  title            String
+  createdAt        DateTime       @default(now())
+  updatedAt        DateTime       @updatedAt
+
+  room           Room              @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  task           Task?             @relation(fields: [taskId], references: [id], onDelete: SetNull)
+  createdByUser  User?             @relation("ArtifactCreatedByUser", fields: [createdByUserId], references: [id])
+  createdByAgent Agent?            @relation("ArtifactCreatedByAgent", fields: [createdByAgentId], references: [id])
+  versions       ArtifactVersion[]
+  approvals      Approval[]
+
+  @@index([roomId, type])
+  @@index([roomId, status])
+  @@index([taskId])
+  @@index([createdByUserId])
+  @@index([createdByAgentId])
+}
+
+model ArtifactVersion {
+  id               String   @id @default(cuid())
+  artifactId       String
+  createdByUserId  String?
+  createdByAgentId String?
+  version          Int
+  content          Json
+  createdAt        DateTime @default(now())
+
+  artifact       Artifact @relation(fields: [artifactId], references: [id], onDelete: Cascade)
+  createdByUser  User?    @relation("ArtifactVersionCreatedByUser", fields: [createdByUserId], references: [id])
+  createdByAgent Agent?   @relation("ArtifactVersionCreatedByAgent", fields: [createdByAgentId], references: [id])
+
+  @@unique([artifactId, version])
+  @@index([createdByUserId])
+  @@index([createdByAgentId])
+}
+
+model Approval {
+  id                 String         @id @default(cuid())
+  roomId             String
+  taskId             String?
+  artifactId         String?
+  requestedByUserId  String?
+  requestedByAgentId String?
+  decidedByUserId    String?
+  title              String
+  status             ApprovalStatus @default(PENDING)
+  riskLevel          TaskRiskLevel  @default(LOW)
+  createdAt          DateTime       @default(now())
+  decidedAt          DateTime?
+
+  room             Room      @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  task             Task?     @relation(fields: [taskId], references: [id], onDelete: SetNull)
+  artifact         Artifact? @relation(fields: [artifactId], references: [id], onDelete: SetNull)
+  requestedByUser  User?     @relation("ApprovalRequestedByUser", fields: [requestedByUserId], references: [id])
+  requestedByAgent Agent?    @relation("ApprovalRequestedByAgent", fields: [requestedByAgentId], references: [id])
+  decidedByUser    User?     @relation("ApprovalDecidedByUser", fields: [decidedByUserId], references: [id])
+
+  @@index([roomId, status])
+  @@index([taskId, status])
+  @@index([artifactId, status])
+  @@index([requestedByUserId])
+  @@index([requestedByAgentId])
+  @@index([decidedByUserId])
+}
+
+model TranscriptSegment {
+  id             String    @id @default(cuid())
+  roomId         String
+  speakerUserId  String?
+  speakerAgentId String?
+  text           String
+  startedAt      DateTime
+  endedAt        DateTime?
+  createdAt      DateTime  @default(now())
+
+  room         Room   @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  speakerUser  User?  @relation(fields: [speakerUserId], references: [id])
+  speakerAgent Agent? @relation(fields: [speakerAgentId], references: [id])
+
+  @@index([roomId, startedAt])
+  @@index([speakerUserId])
+  @@index([speakerAgentId])
+}
+
+model AuditLog {
+  id             String   @id @default(cuid())
+  organizationId String?
+  roomId         String?
+  actorUserId    String?
+  actorAgentId   String?
+  action         String
+  targetType     String
+  targetId       String?
+  payload        Json?
+  createdAt      DateTime @default(now())
+
+  organization Organization? @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  room         Room?         @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  actorUser    User?         @relation("AuditActorUser", fields: [actorUserId], references: [id])
+  actorAgent   Agent?        @relation("AuditActorAgent", fields: [actorAgentId], references: [id])
+
+  @@index([organizationId, createdAt])
+  @@index([roomId, createdAt])
+  @@index([actorUserId])
+  @@index([actorAgentId])
+  @@index([targetType, targetId])
+}

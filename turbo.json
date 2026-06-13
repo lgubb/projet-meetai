@@ -1,0 +1,51 @@
+{
+  "$schema": "https://turborepo.dev/schema.json",
+  "globalEnv": [
+    "DATABASE_URL",
+    "WORKROOM_API_URL",
+    "NEXT_PUBLIC_WORKROOM_WS_URL",
+    "WORKROOM_ROOM_ID",
+    "WORKROOM_WORKER_TOKEN",
+    "WORKROOM_TRANSCRIBER_IDENTITY",
+    "WORKROOM_TRANSCRIBER_NAME",
+    "LIVEKIT_URL",
+    "LIVEKIT_API_KEY",
+    "LIVEKIT_API_SECRET",
+    "DEEPGRAM_API_KEY",
+    "DEEPGRAM_MODEL",
+    "DEEPGRAM_LANGUAGE",
+    "DEEPGRAM_SAMPLE_RATE",
+    "DEEPGRAM_ENDPOINTING",
+    "CLERK_PUBLISHABLE_KEY",
+    "CLERK_SECRET_KEY"
+  ],
+  "tasks": {
+    "dev": {
+      "cache": false,
+      "dependsOn": ["^build"],
+      "persistent": true
+    },
+    "build": {
+      "dependsOn": ["^build"],
+      "outputs": [".next/**", "dist/**", "!.next/cache/**"]
+    },
+    "typecheck": {
+      "dependsOn": ["^build"],
+      "outputs": []
+    },
+    "lint": {
+      "outputs": []
+    },
+    "test": {
+      "dependsOn": ["^build"],
+      "outputs": []
+    },
+    "db:generate": {
+      "cache": false
+    },
+    "db:migrate": {
+      "cache": false,
+      "persistent": true
+    }
+  }
+}
