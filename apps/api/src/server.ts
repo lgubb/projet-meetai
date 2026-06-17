@@ -11,11 +11,14 @@ import { registerDb } from "./plugins/db.js";
 import { registerRoomEvents } from "./plugins/room-events.js";
 import { registerOrganizationRoutes } from "./routes/organizations.js";
 import { registerRoomEventRoutes } from "./routes/room-events.js";
+import { registerRoomMcpRoutes } from "./routes/room-mcp.js";
 import { registerRoomRoutes } from "./routes/rooms.js";
 import { registerTaskRoutes } from "./routes/tasks.js";
+import type { AgentConnector } from "./jean-task-runner.js";
 import type { RoomEventBus } from "./room-event-bus.js";
 
 export type BuildServerOptions = {
+  agentConnectors?: AgentConnector[];
   db?: ApiDatabase;
   liveKitTokenIssuer?: LiveKitTokenIssuer;
   logger?: boolean;
@@ -39,9 +42,11 @@ export function buildServer(options: BuildServerOptions = {}) {
 
   registerOrganizationRoutes(server);
   registerRoomRoutes(server, liveKitTokenIssuer);
+  registerRoomMcpRoutes(server);
   registerTaskRoutes(server);
   server.register(async (eventRouteServer) => {
     registerRoomEventRoutes(eventRouteServer, {
+      agentConnectors: options.agentConnectors,
       workerToken: options.workerToken
     });
   });

@@ -4,7 +4,9 @@ import { z } from "zod";
 import { getAuthMode, upsertCurrentUser } from "../auth.js";
 import { HttpError, notFound, unauthorized } from "../errors.js";
 import { handleJeanTranscriptFinalEvent } from "../jean-flow.js";
+import type { AgentConnector } from "../jean-task-runner.js";
 import { realtimeRoomEventSchema } from "@jean/shared";
+import { listReplayEvents } from "../room-task-service.js";
 
 const roomParamsSchema = z
   .object({
@@ -19,11 +21,44 @@ const roomEventsQuerySchema = z
   })
   .strict();
 
+const roomEventUserQuerySchema = z
+  .object({
+    devUserEmail: z.string().min(1).optional(),
+    devUserName: z.string().min(1).optional()
+  })
+  .passthrough();
+
+const replayEventsQuerySchema = roomEventsQuerySchema
+  .extend({
+    afterEventId: z.string().min(1).optional(),
+    since: z.string().datetime().optional(),
+    limit: z.coerce.number().int().min(1).max(200).optional()
+  })
+  .strict();
+
 export type RegisterRoomEventRoutesOptions = {
+  agentConnectors?: AgentConnector[];
   workerToken?: string | null;
 };
 
 export function registerRoomEventRoutes(server: FastifyInstance, options: RegisterRoomEventRoutesOptions = {}): void {
+  server.get("/rooms/:roomId/events/replay", async (request) => {
+    const params = roomParamsSchema.parse(request.params);
+    const query = replayEventsQuerySchema.parse(request.query);
+    const user = await upsertRoomEventUser(server, request);
+
+    await findAccessibleRoom(server, params.roomId, user.id);
+
+    return {
+      events: await listReplayEvents(server, {
+        roomId: params.roomId,
+        afterEventId: query.afterEventId,
+        since: query.since ? new Date(query.since) : undefined,
+        limit: query.limit ?? 100
+      })
+    };
+  });
+
   server.get("/rooms/:roomId/events", { websocket: true }, async (socket, request) => {
     try {
       const params = roomParamsSchema.parse(request.params);
@@ -63,7 +98,9 @@ export function registerRoomEventRoutes(server: FastifyInstance, options: Regist
     server.roomEvents.publish(eventToPublish);
 
     if (eventToPublish.type === "transcript.final") {
-      await handleJeanTranscriptFinalEvent(server, room, eventToPublish);
+      await handleJeanTranscriptFinalEvent(server, room, eventToPublish, {
+        connectors: options.agentConnectors
+      });
     }
 
     return reply.code(202).send({
@@ -74,7 +111,7 @@ export function registerRoomEventRoutes(server: FastifyInstance, options: Regist
 
 async function upsertRoomEventUser(server: FastifyInstance, request: FastifyRequest) {
   if (getAuthMode() === "dev") {
-    const query = roomEventsQuerySchema.parse(request.query);
+    const query = roomEventUserQuerySchema.parse(request.query);
 
     if (query.devUserEmail) {
       return server.db.user.upsert({

@@ -35,6 +35,15 @@ test("parseJeanIntent detects English document commands", () => {
   assert.equal(intent.responseText, "Yes, I will create a spec.");
 });
 
+test("parseJeanIntent routes preview requests to prototype artifacts", () => {
+  const intent = parseJeanIntent("Jean, crée une preview HTML de dashboard");
+
+  assert.equal(intent.shouldAct, true);
+  assert.equal(intent.taskType, "prototype");
+  assert.equal(intent.artifactType, "PREVIEW");
+  assert.equal(intent.title, "Prototype");
+});
+
 test("parseJeanIntent rejects low-confidence commands", () => {
   const implicit = parseJeanIntent("Il faudrait faire une recherche");
   const unknown = parseJeanIntent("Jean, tu en penses quoi ?");

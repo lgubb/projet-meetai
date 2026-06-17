@@ -1,4 +1,4 @@
-import type { RealtimeArtifact, RealtimeTask } from "@jean/shared";
+import type { ApprovalRequest, RealtimeArtifact, RealtimeTask, RealtimeTaskLog, RoomAgent } from "@jean/shared";
 
 export type DevUser = {
   email: string;
@@ -75,10 +75,23 @@ export type LiveKitTokenResponse = {
 export type RoomTaskItem = {
   task: RealtimeTask;
   artifacts: RealtimeArtifact[];
+  logs: RealtimeTaskLog[];
 };
 
 export type RoomTasksResponse = {
   items: RoomTaskItem[];
+};
+
+export type RoomAgentsResponse = {
+  agents: RoomAgent[];
+};
+
+export type RoomApprovalsResponse = {
+  approvals: ApprovalRequest[];
+};
+
+export type ApprovalDecisionResponse = {
+  approval: ApprovalRequest;
 };
 
 export class WorkroomApiError extends Error {

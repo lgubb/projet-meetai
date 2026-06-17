@@ -2,6 +2,7 @@ import type { FastifyInstance } from "fastify";
 import { parseJeanIntent } from "@jean/jean-core";
 import type { ArtifactType, RealtimeRoomEvent } from "@jean/shared";
 
+import { runJeanTask, type JeanTaskRunnerOptions } from "./jean-task-runner.js";
 import { createAgentSpeechEvent, createTaskWithArtifact } from "./room-task-service.js";
 
 type RoomRecord = {
@@ -18,7 +19,8 @@ type JeanAgentRecord = {
 export async function handleJeanTranscriptFinalEvent(
   server: FastifyInstance,
   room: RoomRecord,
-  event: Extract<RealtimeRoomEvent, { type: "transcript.final" }>
+  event: Extract<RealtimeRoomEvent, { type: "transcript.final" }>,
+  options: JeanTaskRunnerOptions = {}
 ): Promise<void> {
   const intent = parseJeanIntent(event.text);
 
@@ -51,6 +53,17 @@ export async function handleJeanTranscriptFinalEvent(
       agentId: jean.id,
       text: intent.responseText
     })
+  );
+
+  await runJeanTask(
+    server,
+    {
+      intent,
+      task: bundle.task,
+      artifact: bundle.artifact,
+      agent: jean
+    },
+    options
   );
 }
 

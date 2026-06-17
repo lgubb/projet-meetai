@@ -883,27 +883,63 @@ agents:
 
 ## 14. Room MCP Server
 
-Ton app doit aussi exposer un MCP server interne pour que des agents puissent manipuler la room proprement.
+Ton app expose aussi un MCP server interne pour que des agents puissent manipuler la room proprement. La Phase 8 verrouille le principe : la room est la source de vérité, les agents ne parlent pas directement au frontend, et toutes les mutations importantes passent par tasks, artifacts, previews, approvals et events auditables.
 
-### Tools V1
+### Tools Phase 8
 
 ```ts
 room.get_context_pack
+room.get_room_state
+room.get_transcript
+room.search_transcript
+room.list_participants
+room.list_tasks
+room.get_task
+room.list_artifacts
+room.read_artifact
+room.list_events
+room.get_capabilities
 room.create_task
-room.create_tab
+room.update_task_status
+room.assign_task
 room.append_log
-room.update_status
+room.create_artifact
 room.write_artifact
 room.patch_artifact
 room.set_preview_url
-room.request_approval
-room.speak
 room.complete_task
+room.fail_task
+preview.create_session
+preview.write_files
+preview.start_server
+preview.publish_url
+preview.stop_session
+agent.register
+agent.heartbeat
+agent.list
+agent.claim_task
+agent.start_run
+agent.emit_event
+agent.finish_run
+approval.request
+approval.get_status
+room.request_user_input
+room.speak
 ```
 
 ### Pourquoi c'est important
 
 Sans tools structurés, les agents externes vont rendre du texte brut. Avec le Room MCP Server, ils peuvent produire des événements et artefacts exploitables par ton UI.
+
+### Statut Phase 8
+
+Le package `@jean/mcp` expose maintenant un serveur in-process compatible avec les méthodes MCP essentielles (`tools/list`, `tools/call`, `resources/read`, `prompts/get`). Il valide les payloads, sanitize les secrets, et couvre le flow mock agent -> task -> logs -> artifact -> sandbox preview -> approval.
+
+L'API Fastify expose aussi un endpoint MCP HTTP room-scoped (`POST /rooms/:roomId/mcp`) protege par token signe room/session/agent et branche sur l'etat reel DB pour tasks, artifacts, transcript, approvals et events. Les agents creent d'abord une session via `POST /rooms/:roomId/agent-sessions`, puis appellent l'API MCP avec `Authorization: Bearer <room-agent-token>`.
+
+Les panneaux UI `Agents` et `Approvals` sont presents dans la room. Ils lisent l'etat initial via API, puis se mettent a jour avec les events realtime `room.event`. Le replay d'events persistants inclut maintenant les events task/artifact et les audit logs agents/approvals, donc une room ouverte apres l'action d'un agent montre quand meme l'historique.
+
+Limite assumee : le transport livre ici est un POST JSON-RPC HTTP room-scoped. Le SSE/streaming long-running MCP reste hors scope tant que le contrat HTTP/auth/persistence ne demande pas plus.
 
 ---
 
@@ -1002,6 +1038,7 @@ DATABASE_URL=postgresql://...
 REDIS_URL=redis://...
 
 # Auth
+WORKROOM_AUTH_MODE=dev
 CLERK_SECRET_KEY=...
 NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=...
 
@@ -1018,6 +1055,8 @@ OPENAI_API_KEY=...
 
 # Perplexity
 PERPLEXITY_API_KEY=...
+PERPLEXITY_MODEL=sonar-pro
+PERPLEXITY_API_BASE_URL=https://api.perplexity.ai
 
 # E2B
 E2B_API_KEY=...
@@ -1222,6 +1261,30 @@ Critère :
 "Jean, fais une recherche sur X" produit un rapport sourcé dans un onglet.
 ```
 
+Statut repo au 2026-06-15 :
+
+- Phase 6A terminee : Jean cree une task et la fait vivre via runner local observable.
+- Phase 6 terminee pour le chemin research : Jean route `research` vers Perplexity si `PERPLEXITY_API_KEY` est present.
+- Phase 6B terminee : scripts locaux, propagation env Turbo, override `WORKROOM_AUTH_MODE=dev`, docs de reprise.
+
+Runbook local :
+
+```bash
+pnpm dev:local
+```
+
+Depuis Phase 8E, ce runbook lance le room-worker en mode mock pour verifier API/web/MCP sans secrets LiveKit/Deepgram. Pour tester une vraie commande vocale, utiliser `pnpm dev:room-worker` avec les variables LiveKit/Deepgram reelles.
+
+ou, en logs separes :
+
+```bash
+pnpm dev:api:local
+pnpm dev:web
+pnpm dev:room-worker
+```
+
+Jalon Phase 7A realise : connecter E2B pour une preview prototype visible dans un artifact.
+
 ---
 
 ### Phase 7 — E2B prototype connector
@@ -1241,22 +1304,48 @@ Critère :
 "Jean, crée une preview HTML de X" affiche une preview isolée dans l'onglet.
 ```
 
+Statut repo au 2026-06-16 :
+
+- Phase 7A terminee : Jean route `preview` vers `prototype/PREVIEW`.
+- Le runner Jean peut publier `artifact.preview_url`.
+- E2B cree un sandbox, ecrit un fichier `index.html`, lance un serveur HTTP et retourne une URL publique quand `E2B_API_KEY` est present.
+- Le web affiche les artifacts `PREVIEW` dans un iframe sandbox avec scripts autorises.
+
 ---
 
 ### Phase 8 — Room MCP Server
 
 Livrables :
 
-- MCP server interne ;
-- tools `room.create_tab`, `room.append_log`, `room.write_artifact`, etc. ;
-- auth serveur interne ;
-- mapping tool calls → RoomEvents.
+- contrat Room <-> Agents documenté ;
+- schemas `RoomAgent`, `AgentRun`, `ApprovalRequest`, `SandboxSession` ;
+- MCP server interne in-process ;
+- tools/resources/prompts Phase 8 ;
+- validation des tool arguments ;
+- mapping tool calls -> RoomEvents ;
+- provider sandbox mock injectable ;
+- sanitization des secrets ;
+- transport MCP HTTP Fastify room-scoped ;
+- tokens agents signes `roomId + agentId + sessionId` ;
+- endpoints agents et approvals ;
+- UI minimale `Agents` / `Approvals` ;
+- replay events task/artifact/audit dans la room.
 
 Critère :
 
 ```text
-Un agent externe peut créer un onglet et écrire un artifact via MCP.
+Un agent MCP externe, avec token de room, peut lire le contexte, créer ou claim une task, écrire des logs, produire un artifact, publier une preview URL, demander une approval, et voir ces actions dans les events/UI sans parler au frontend.
 ```
+
+Statut repo au 2026-06-17 :
+
+- Phase 8A terminee : spec dediee dans `docs/phases/phase-08-room-mcp-agents-contract.md`.
+- Phase 8B terminee : `@jean/mcp` expose le catalogue large tools/resources/prompts et un client mock teste.
+- Phase 8C terminee : transport MCP HTTP Fastify sur `POST /rooms/:roomId/mcp`, branche sur DB tasks, artifacts, transcript, agents, approvals, task events et audit logs.
+- Phase 8D terminee : creation de session agent, token signe room/session/agent, verification de session `AgentConnection`, verification de participation agent dans la room, protection anti-usurpation `agentId`, approvals resolubles par humain.
+- Phase 8E terminee : panneaux UI `Agents` et `Approvals`, boutons `Approve` / `Reject`, replay d'events persistants incluant les audit logs `AGENT_REGISTERED` et `APPROVAL_REQUESTED`.
+- Smoke local verifie : `pnpm dev:local` demarre API + web + room-worker mock ; un client MCP HTTP externe a cree task/log/artifact/preview/approval ; la room UI a affiche agent, approval et events.
+- Reste hors scope : SSE/streaming long-running MCP si necessaire, persistance dediee `AgentRun`/`SandboxSession`, puis Phase 9 `jean-bridge`.
 
 ---
 
@@ -1279,6 +1368,12 @@ Critère :
 Depuis une room, Jean peut déléguer une tâche à Codex local via le bridge.
 ```
 
+Statut repo au 2026-06-17 :
+
+- Non demarree.
+- Precondition Phase 8 atteinte : le contrat MCP HTTP/auth/persistence est prouve avant de brancher Codex.
+- Prochaine etape recommandee : connecter un premier agent local via `jean-bridge`, sans ajouter Lovable/v0/Claude en meme temps.
+
 ---
 
 ### Phase 10 — Lovable MCP connector
@@ -1296,6 +1391,11 @@ Critère :
 ```text
 Jean peut demander à Lovable de générer un prototype et l'afficher en room.
 ```
+
+Statut repo au 2026-06-17 :
+
+- Non demarree.
+- A garder apres Phase 9, pour eviter de debugguer plusieurs connecteurs externes avant d'avoir prouve le bridge local.
 
 ---
 
@@ -1315,6 +1415,11 @@ Critère :
 ```text
 Aucune action externe sensible n'est exécutée sans validation humaine.
 ```
+
+Statut repo au 2026-06-17 :
+
+- Une base existe deja via Phase 8D/8E : approvals persistantes, UI minimale, decisions humaines, audit logs agents/approvals et protection anti-usurpation agent.
+- Reste a faire pour une Phase 11 complete : risk policy centralisee, permissions fines org/user/agent, historique tool calls plus detaille, regles R2/R3 appliquees partout, tests de non-regression sur actions sensibles.
 
 ---
 
@@ -2082,7 +2187,7 @@ et finir la réunion avec un livrable déjà exploitable.
 - Deepgram LiveKit integration : https://developers.deepgram.com/docs/livekit-integration
 - MCP Authorization : https://modelcontextprotocol.io/specification/draft/basic/authorization
 - E2B docs : https://e2b.dev/docs
-- E2B public sandbox URLs : https://e2b.dev/docs/sandbox/internet-access
+- E2B public sandbox URLs : https://e2b.dev/docs/network/public-url
 - Render WebSockets : https://render.com/docs/websocket
 - Next.js on Vercel : https://vercel.com/docs/frameworks/full-stack/nextjs
 - Clerk Organizations : https://clerk.com/docs/guides/organizations/overview

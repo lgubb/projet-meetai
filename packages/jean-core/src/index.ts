@@ -100,7 +100,7 @@ function detectTaskType(normalized: string): AgentTaskType | null {
     return "research";
   }
 
-  if (containsAny(normalized, ["prototype", "maquette", "demo", "proof of concept", "poc"])) {
+  if (containsAny(normalized, ["prototype", "preview", "maquette", "demo", "proof of concept", "poc"])) {
     return "prototype";
   }
 

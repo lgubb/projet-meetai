@@ -12,6 +12,16 @@ export type AuthenticatedUser = {
 };
 
 export function getAuthMode(): AuthMode {
+  const explicitMode = process.env.WORKROOM_AUTH_MODE?.trim().toLowerCase();
+
+  if (explicitMode === "clerk" || explicitMode === "dev") {
+    return explicitMode;
+  }
+
+  if (explicitMode) {
+    throw new Error("WORKROOM_AUTH_MODE must be either 'dev' or 'clerk'.");
+  }
+
   return process.env.CLERK_SECRET_KEY ? "clerk" : "dev";
 }
 

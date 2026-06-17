@@ -13,14 +13,17 @@ import {
   type TrackReferenceOrPlaceholder
 } from "@livekit/components-react";
 import { type Participant, Track } from "livekit-client";
-import type { RealtimeArtifact, RealtimeRoomEvent } from "@jean/shared";
+import type { ApprovalRequest, RealtimeArtifact, RealtimeRoomEvent, RealtimeTaskLog, RoomAgent, RoomEvent } from "@jean/shared";
 
 import {
+  type ApprovalDecisionResponse,
   type DevUser,
   type JoinRoomResponse,
   type LiveKitConnection,
   type LiveKitTokenResponse,
   type Room,
+  type RoomAgentsResponse,
+  type RoomApprovalsResponse,
   type RoomParticipant,
   type RoomResponse,
   type RoomTaskItem,
@@ -50,6 +53,8 @@ export function RoomShell({ roomId }: RoomShellProps) {
   const [room, setRoom] = useState<Room | null>(null);
   const [participants, setParticipants] = useState<RoomParticipant[]>([]);
   const [taskItems, setTaskItems] = useState<RoomTaskItem[]>([]);
+  const [agents, setAgents] = useState<RoomAgent[]>([]);
+  const [approvals, setApprovals] = useState<ApprovalRequest[]>([]);
   const [activeTaskId, setActiveTaskId] = useState<string | null>(null);
   const [liveKitConnection, setLiveKitConnection] = useState<LiveKitConnection | null>(null);
   const [notice, setNotice] = useState("");
@@ -70,6 +75,12 @@ export function RoomShell({ roomId }: RoomShellProps) {
     () => roomEvents.filter(isAgentSpeechEvent),
     [roomEvents]
   );
+  const roomAuditEvents = useMemo(() => roomEvents.filter(isRoomAuditEvent).map((event) => event.event), [roomEvents]);
+  const pendingApprovals = useMemo(
+    () => approvals.filter((approval) => approval.status === "PENDING"),
+    [approvals]
+  );
+  const latestCreatedTaskId = useMemo(() => roomEvents.find(isTaskCreatedEvent)?.task.id ?? null, [roomEvents]);
 
   useEffect(() => {
     const savedUser = readSavedDevUser();
@@ -98,10 +109,39 @@ export function RoomShell({ roomId }: RoomShellProps) {
     }
   }, [activeTaskId, displayedTaskItems]);
 
+  useEffect(() => {
+    if (!latestCreatedTaskId) {
+      return;
+    }
+
+    if (displayedTaskItems.some((item) => item.task.id === latestCreatedTaskId)) {
+      setActiveTaskId(latestCreatedTaskId);
+    }
+  }, [displayedTaskItems, latestCreatedTaskId]);
+
+  useEffect(() => {
+    if (roomAuditEvents.length === 0) {
+      return;
+    }
+
+    const nextAgents = roomAuditEvents.map(readRoomAgentFromEvent).filter(isPresent);
+    const nextApprovals = roomAuditEvents.map(readApprovalFromEvent).filter(isPresent);
+
+    if (nextAgents.length > 0) {
+      setAgents((current) => nextAgents.reduce(upsertRoomAgent, current));
+    }
+
+    if (nextApprovals.length > 0) {
+      setApprovals((current) => nextApprovals.reduce(upsertApproval, current));
+    }
+  }, [roomAuditEvents]);
+
   async function joinAndLoadRoom(activeUser: DevUser) {
     setIsJoining(true);
     setLiveKitConnection(null);
     setTaskItems([]);
+    setAgents([]);
+    setApprovals([]);
     setNotice("");
 
     try {
@@ -123,6 +163,18 @@ export function RoomShell({ roomId }: RoomShellProps) {
 
       setTaskItems(taskData.items);
 
+      const agentsData = await workroomApi<RoomAgentsResponse>(`/rooms/${roomId}/agents`, {
+        user: activeUser
+      });
+
+      setAgents(agentsData.agents);
+
+      const approvalsData = await workroomApi<RoomApprovalsResponse>(`/rooms/${roomId}/approvals`, {
+        user: activeUser
+      });
+
+      setApprovals(approvalsData.approvals);
+
       const liveKitData = await workroomApi<LiveKitTokenResponse>(`/rooms/${roomId}/livekit-token`, {
         method: "POST",
         body: {},
@@ -135,6 +187,8 @@ export function RoomShell({ roomId }: RoomShellProps) {
       setRoom(null);
       setParticipants([]);
       setTaskItems([]);
+      setAgents([]);
+      setApprovals([]);
       setLiveKitConnection(null);
     } finally {
       setIsJoining(false);
@@ -161,6 +215,22 @@ export function RoomShell({ roomId }: RoomShellProps) {
   async function copyShareLink() {
     await navigator.clipboard.writeText(window.location.href);
     setNotice("Room link copied.");
+  }
+
+  async function decideApproval(approvalId: string, status: "APPROVED" | "REJECTED") {
+    try {
+      const data = await workroomApi<ApprovalDecisionResponse>(`/rooms/${roomId}/approvals/${approvalId}/decision`, {
+        method: "POST",
+        body: {
+          status
+        },
+        user
+      });
+
+      setApprovals((current) => upsertApproval(current, data.approval));
+    } catch (error) {
+      setNotice(getErrorMessage(error));
+    }
   }
 
   return (
@@ -304,6 +374,58 @@ export function RoomShell({ roomId }: RoomShellProps) {
             </div>
           </section>
 
+          <section>
+            <div className="panel-heading">
+              <h2>Agents</h2>
+              <span>{agents.length}</span>
+            </div>
+            <div className="agent-list">
+              {agents.length === 0 ? <p className="empty-state">No agents.</p> : null}
+              {agents.map((agent) => (
+                <article className="agent-row" key={agent.id}>
+                  <div>
+                    <strong>{agent.name}</strong>
+                    <span>{agent.provider} / {agent.transport}</span>
+                  </div>
+                  <small>{agent.capabilities.join(", ")}</small>
+                </article>
+              ))}
+            </div>
+          </section>
+
+          <section>
+            <div className="panel-heading">
+              <h2>Approvals</h2>
+              <span>{pendingApprovals.length}/{approvals.length}</span>
+            </div>
+            <div className="approval-list">
+              {approvals.length === 0 ? <p className="empty-state">No approvals.</p> : null}
+              {approvals.map((approval) => (
+                <article className="approval-row" key={approval.id}>
+                  <div>
+                    <strong>{approval.action}</strong>
+                    <span>{approval.status} / {approval.riskLevel}</span>
+                  </div>
+                  <p>{approval.reason}</p>
+                  {approval.status === "PENDING" ? (
+                    <div className="approval-actions">
+                      <button type="button" onClick={() => decideApproval(approval.id, "APPROVED")}>
+                        Approve
+                      </button>
+                      <button
+                        className="secondary-button"
+                        type="button"
+                        onClick={() => decideApproval(approval.id, "REJECTED")}
+                      >
+                        Reject
+                      </button>
+                    </div>
+                  ) : null}
+                </article>
+              ))}
+            </div>
+          </section>
+
           <section className="event-debug-panel">
             <div className="panel-heading">
               <h2>Events</h2>
@@ -313,7 +435,7 @@ export function RoomShell({ roomId }: RoomShellProps) {
             <div className="event-debug-list">
               {roomEvents.length === 0 ? <p className="empty-state">No events.</p> : null}
               {roomEvents.map((event, index) => (
-                <article className="event-debug-row" key={`${event.type}:${getEventTime(event)}:${index}`}>
+                <article className="event-debug-row" key={event.eventId ?? `${event.type}:${getEventTime(event)}:${index}`}>
                   <div>
                     <strong title={getEventTitle(event, speakerLabelsById)}>{getEventTitle(event, speakerLabelsById)}</strong>
                     <span>{getEventBadge(event)}</span>
@@ -427,16 +549,180 @@ function ArtifactPreview({ taskItem }: { taskItem: RoomTaskItem }) {
         <p className="eyebrow">{taskItem.task.status}</p>
         <h2>{taskItem.task.title}</h2>
         <p>Task created. Waiting for artifact.</p>
+        <TaskLogPanel logs={taskItem.logs} />
       </div>
     );
   }
 
   return (
     <div className="artifact-preview">
-      <p className="eyebrow">{formatArtifactType(artifact.type)}</p>
-      <h2>{artifact.title}</h2>
-      <p>{formatArtifactContent(artifact)}</p>
+      <div className="artifact-preview-header">
+        <p className="eyebrow">
+          {taskItem.task.status} / {formatArtifactType(artifact.type)}
+        </p>
+        <h2>{artifact.title}</h2>
+      </div>
+      <ArtifactRenderer artifact={artifact} />
+      <TaskLogPanel logs={taskItem.logs} />
     </div>
+  );
+}
+
+function ArtifactRenderer({ artifact }: { artifact: RealtimeArtifact }) {
+  if (artifact.type === "DOCUMENT") {
+    return <DocumentArtifactRenderer artifact={artifact} />;
+  }
+
+  if (artifact.type === "RESEARCH") {
+    return <ResearchArtifactRenderer artifact={artifact} />;
+  }
+
+  if (artifact.type === "CODE") {
+    return <CodeArtifactRenderer artifact={artifact} />;
+  }
+
+  if (artifact.type === "PREVIEW") {
+    return <PreviewArtifactRenderer artifact={artifact} />;
+  }
+
+  return <p>{formatArtifactContent(artifact)}</p>;
+}
+
+function DocumentArtifactRenderer({ artifact }: { artifact: RealtimeArtifact }) {
+  const content = artifact.latestVersion?.content ?? {};
+  const sections = getRecordArray(content.sections);
+
+  return (
+    <div className="artifact-document">
+      <p>{formatArtifactContent(artifact)}</p>
+      {sections.length > 0 ? (
+        <div className="artifact-section-list">
+          {sections.map((section, index) => (
+            <section className="artifact-section" key={`${getRecordString(section, "title", "Section")}:${index}`}>
+              <h3>{getRecordString(section, "title", `Section ${index + 1}`)}</h3>
+              <p>{getRecordString(section, "text", "")}</p>
+            </section>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function ResearchArtifactRenderer({ artifact }: { artifact: RealtimeArtifact }) {
+  const content = artifact.latestVersion?.content ?? {};
+  const summary = getContentText(content, "summary") ?? formatArtifactContent(artifact);
+  const text = getContentText(content, "text");
+  const body = text && text !== summary ? splitParagraphs(text) : [];
+  const sources = getRecordArray(content.sources);
+
+  return (
+    <div className="artifact-research">
+      <p>{summary}</p>
+      {body.length > 0 ? (
+        <div className="artifact-research-body">
+          {body.map((paragraph, index) => (
+            <p key={`${paragraph.slice(0, 24)}:${index}`}>{paragraph}</p>
+          ))}
+        </div>
+      ) : null}
+      {sources.length > 0 ? (
+        <div className="source-list">
+          {sources.map((source, index) => {
+            const title = getRecordString(source, "title", getRecordString(source, "url", `Source ${index + 1}`));
+            const url = getRecordString(source, "url", "");
+
+            return url ? (
+              <a className="source-link" href={url} key={`${url}:${index}`} rel="noreferrer" target="_blank">
+                {title}
+              </a>
+            ) : (
+              <span className="source-link" key={`${title}:${index}`}>
+                {title}
+              </span>
+            );
+          })}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function CodeArtifactRenderer({ artifact }: { artifact: RealtimeArtifact }) {
+  const content = artifact.latestVersion?.content ?? {};
+  const files = getCodeFiles(content.files);
+  const activeFile = files[0] ?? null;
+  const previewUrl = getContentText(content, "previewUrl");
+
+  return (
+    <div className="artifact-code">
+      {files.length > 0 ? (
+        <div className="code-layout">
+          <div className="code-file-list">
+            {files.map((file) => (
+              <span key={file.path}>{file.path}</span>
+            ))}
+          </div>
+          <pre className="code-block">{activeFile?.content ?? ""}</pre>
+        </div>
+      ) : (
+        <pre className="code-block">{formatArtifactContent(artifact)}</pre>
+      )}
+      {previewUrl ? (
+        <PreviewFrame previewUrl={previewUrl} title={`${artifact.title} preview`} />
+      ) : null}
+    </div>
+  );
+}
+
+function PreviewArtifactRenderer({ artifact }: { artifact: RealtimeArtifact }) {
+  const content = artifact.latestVersion?.content ?? {};
+  const files = getCodeFiles(content.files);
+  const activeFile = files[0] ?? null;
+  const previewUrl = getContentText(content, "previewUrl");
+
+  return (
+    <div className="artifact-prototype">
+      <p>{formatArtifactContent(artifact)}</p>
+      {previewUrl ? <PreviewFrame previewUrl={previewUrl} title={`${artifact.title} preview`} /> : null}
+      {activeFile ? (
+        <details className="prototype-source">
+          <summary>{activeFile.path}</summary>
+          <pre className="code-block">{activeFile.content}</pre>
+        </details>
+      ) : null}
+    </div>
+  );
+}
+
+function PreviewFrame({ previewUrl, title }: { previewUrl: string; title: string }) {
+  return (
+    <div className="preview-frame-shell">
+      <iframe sandbox="allow-scripts allow-forms allow-popups" src={previewUrl} title={title} />
+      <a href={previewUrl} rel="noreferrer" target="_blank">
+        Open preview
+      </a>
+    </div>
+  );
+}
+
+function TaskLogPanel({ logs }: { logs: RealtimeTaskLog[] }) {
+  return (
+    <section className="task-log-panel">
+      <div className="panel-heading">
+        <h3>Logs</h3>
+        <span>{logs.length}</span>
+      </div>
+      <div className="task-log-list">
+        {logs.length === 0 ? <p className="empty-state">No logs.</p> : null}
+        {logs.map((log) => (
+          <p className="task-log-row" key={log.id}>
+            <time dateTime={log.createdAt}>{formatEventTime(log.createdAt)}</time>
+            <span>{log.message}</span>
+          </p>
+        ))}
+      </div>
+    </section>
   );
 }
 
@@ -450,7 +736,8 @@ function mergeRoomTaskEvents(initialItems: RoomTaskItem[], events: RealtimeRoomE
   for (const item of initialItems) {
     itemsByTaskId.set(item.task.id, {
       task: item.task,
-      artifacts: [...item.artifacts]
+      artifacts: [...item.artifacts],
+      logs: [...item.logs]
     });
   }
 
@@ -460,17 +747,47 @@ function mergeRoomTaskEvents(initialItems: RoomTaskItem[], events: RealtimeRoomE
 
       itemsByTaskId.set(event.task.id, {
         task: event.task,
-        artifacts: existing?.artifacts ?? []
+        artifacts: existing?.artifacts ?? [],
+        logs: existing?.logs ?? []
       });
     }
 
-    if (event.type === "artifact.created" && event.artifact.taskId) {
+    if (event.type === "task.status") {
+      const existing = itemsByTaskId.get(event.task.id);
+
+      itemsByTaskId.set(event.task.id, {
+        task: event.task,
+        artifacts: existing?.artifacts ?? [],
+        logs: existing?.logs ?? []
+      });
+    }
+
+    if (event.type === "task.log") {
+      const existing = itemsByTaskId.get(event.taskId);
+
+      if (existing) {
+        itemsByTaskId.set(event.taskId, {
+          task: existing.task,
+          artifacts: existing.artifacts,
+          logs: upsertTaskLog(existing.logs, event.log)
+        });
+      }
+    }
+
+    if (
+      (event.type === "artifact.created" ||
+        event.type === "artifact.updated" ||
+        event.type === "artifact.patch" ||
+        event.type === "artifact.preview_url") &&
+      event.artifact.taskId
+    ) {
       const existing = itemsByTaskId.get(event.artifact.taskId);
 
       if (existing) {
         itemsByTaskId.set(event.artifact.taskId, {
           task: existing.task,
-          artifacts: upsertArtifact(existing.artifacts, event.artifact)
+          artifacts: upsertArtifact(existing.artifacts, event.artifact),
+          logs: existing.logs
         });
       }
     }
@@ -478,6 +795,14 @@ function mergeRoomTaskEvents(initialItems: RoomTaskItem[], events: RealtimeRoomE
 
   return [...itemsByTaskId.values()].sort(
     (left, right) => new Date(left.task.createdAt).getTime() - new Date(right.task.createdAt).getTime()
+  );
+}
+
+function upsertTaskLog(logs: RealtimeTaskLog[], log: RealtimeTaskLog): RealtimeTaskLog[] {
+  const nextLogs = logs.filter((candidate) => candidate.id !== log.id);
+
+  return [...nextLogs, log].sort(
+    (left, right) => new Date(left.createdAt).getTime() - new Date(right.createdAt).getTime()
   );
 }
 
@@ -489,10 +814,58 @@ function upsertArtifact(artifacts: RealtimeArtifact[], artifact: RealtimeArtifac
   );
 }
 
+function upsertRoomAgent(agents: RoomAgent[], agent: RoomAgent): RoomAgent[] {
+  const nextAgents = agents.filter((candidate) => candidate.id !== agent.id);
+
+  return [...nextAgents, agent].sort(
+    (left, right) => new Date(left.registeredAt).getTime() - new Date(right.registeredAt).getTime()
+  );
+}
+
+function upsertApproval(approvals: ApprovalRequest[], approval: ApprovalRequest): ApprovalRequest[] {
+  const nextApprovals = approvals.filter((candidate) => candidate.id !== approval.id);
+
+  return [...nextApprovals, approval].sort(
+    (left, right) => new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime()
+  );
+}
+
 function isAgentSpeechEvent(
   event: RealtimeRoomEvent
 ): event is Extract<RealtimeRoomEvent, { type: "agent.speech" }> {
   return event.type === "agent.speech";
+}
+
+function isRoomAuditEvent(
+  event: RealtimeRoomEvent
+): event is Extract<RealtimeRoomEvent, { type: "room.event" }> {
+  return event.type === "room.event";
+}
+
+function isTaskCreatedEvent(
+  event: RealtimeRoomEvent
+): event is Extract<RealtimeRoomEvent, { type: "task.created" }> {
+  return event.type === "task.created";
+}
+
+function readRoomAgentFromEvent(event: RoomEvent): RoomAgent | null {
+  const agent = event.payload.agent;
+
+  if (!isRecord(agent) || typeof agent.id !== "string" || typeof agent.name !== "string") {
+    return null;
+  }
+
+  return agent as RoomAgent;
+}
+
+function readApprovalFromEvent(event: RoomEvent): ApprovalRequest | null {
+  const approval = event.payload.approval;
+
+  if (!isRecord(approval) || typeof approval.id !== "string" || typeof approval.action !== "string") {
+    return null;
+  }
+
+  return approval as ApprovalRequest;
 }
 
 function formatTaskMeta(item: RoomTaskItem): string {
@@ -517,15 +890,51 @@ function formatArtifactType(type: RealtimeArtifact["type"]): string {
 function formatArtifactContent(artifact: RealtimeArtifact): string {
   const content = artifact.latestVersion?.content;
 
-  if (typeof content?.text === "string") {
-    return content.text;
+  return getContentText(content, "text") ?? getContentText(content, "value") ?? `${formatArtifactType(artifact.type)} draft created.`;
+}
+
+function getContentText(content: Record<string, unknown> | null | undefined, key: string): string | null {
+  const value = content?.[key];
+
+  return typeof value === "string" && value.trim() ? value : null;
+}
+
+function getRecordArray(value: unknown): Record<string, unknown>[] {
+  if (!Array.isArray(value)) {
+    return [];
   }
 
-  if (typeof content?.value === "string") {
-    return content.value;
-  }
+  return value.filter(isRecord);
+}
 
-  return `${formatArtifactType(artifact.type)} draft created.`;
+function getRecordString(record: Record<string, unknown>, key: string, fallback: string): string {
+  const value = record[key];
+
+  return typeof value === "string" && value.trim() ? value : fallback;
+}
+
+function getCodeFiles(value: unknown): Array<{ path: string; content: string }> {
+  return getRecordArray(value)
+    .map((file, index) => ({
+      path: getRecordString(file, "path", `file-${index + 1}.txt`),
+      content: getRecordString(file, "content", "")
+    }))
+    .filter((file) => file.content || file.path);
+}
+
+function splitParagraphs(value: string): string[] {
+  return value
+    .split(/\n{2,}/)
+    .map((part) => part.trim())
+    .filter(Boolean);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === "object" && !Array.isArray(value));
+}
+
+function isPresent<T>(value: T | null | undefined): value is T {
+  return value !== null && value !== undefined;
 }
 
 function createSpeakerLabels(participants: RoomParticipant[]): Map<string, string> {
@@ -563,6 +972,10 @@ function formatEventTime(value: string): string {
 }
 
 function getEventTitle(event: RealtimeRoomEvent, speakerLabelsById: Map<string, string>): string {
+  if (event.type === "room.event") {
+    return formatRoomEventType(event.event.type);
+  }
+
   if (event.type === "transcript.partial" || event.type === "transcript.final") {
     return speakerLabelsById.get(event.speakerId) ?? event.speakerId;
   }
@@ -571,7 +984,7 @@ function getEventTitle(event: RealtimeRoomEvent, speakerLabelsById: Map<string, 
     return "Jean";
   }
 
-  if (event.type === "task.created") {
+  if (event.type === "task.created" || event.type === "task.status" || event.type === "task.log") {
     return "Task";
   }
 
@@ -579,6 +992,10 @@ function getEventTitle(event: RealtimeRoomEvent, speakerLabelsById: Map<string, 
 }
 
 function getEventBadge(event: RealtimeRoomEvent): string {
+  if (event.type === "room.event") {
+    return "Room";
+  }
+
   if (event.type === "transcript.partial") {
     return "Partial";
   }
@@ -591,14 +1008,41 @@ function getEventBadge(event: RealtimeRoomEvent): string {
     return "Created";
   }
 
+  if (event.type === "task.status") {
+    return event.task.status;
+  }
+
+  if (event.type === "task.log") {
+    return "Log";
+  }
+
   if (event.type === "artifact.created") {
     return formatArtifactType(event.artifact.type);
+  }
+
+  if (event.type === "artifact.updated") {
+    return "Updated";
+  }
+
+  if (event.type === "artifact.patch") {
+    return "Patch";
+  }
+
+  if (event.type === "artifact.preview_url") {
+    return "Preview";
   }
 
   return "Speech";
 }
 
 function getEventBody(event: RealtimeRoomEvent): string {
+  if (event.type === "room.event") {
+    const approval = readApprovalFromEvent(event.event);
+    const agent = readRoomAgentFromEvent(event.event);
+
+    return approval?.reason ?? agent?.name ?? formatRoomEventType(event.event.type);
+  }
+
   if (event.type === "transcript.partial" || event.type === "transcript.final" || event.type === "agent.speech") {
     return event.text;
   }
@@ -607,9 +1051,25 @@ function getEventBody(event: RealtimeRoomEvent): string {
     return event.task.title;
   }
 
+  if (event.type === "task.status") {
+    return `${event.task.title} is ${event.task.status}`;
+  }
+
+  if (event.type === "task.log") {
+    return event.log.message;
+  }
+
   return event.artifact.title;
 }
 
 function getEventTime(event: RealtimeRoomEvent): string {
   return event.ts;
+}
+
+function formatRoomEventType(type: RoomEvent["type"]): string {
+  return type
+    .toLowerCase()
+    .split("_")
+    .map((part) => part.slice(0, 1).toUpperCase() + part.slice(1))
+    .join(" ");
 }

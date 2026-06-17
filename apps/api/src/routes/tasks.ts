@@ -1,14 +1,36 @@
 import type { FastifyInstance } from "fastify";
-import { artifactTypeSchema, metadataSchema } from "@jean/shared";
+import { artifactStatusSchema, artifactTypeSchema, metadataSchema, taskStatusSchema } from "@jean/shared";
 import { z } from "zod";
 
 import { upsertCurrentUser } from "../auth.js";
 import { notFound } from "../errors.js";
-import { createTaskWithArtifact, listRoomTaskState } from "../room-task-service.js";
+import {
+  appendTaskLog,
+  createTaskWithArtifact,
+  listRoomTaskState,
+  patchArtifact,
+  updateArtifact,
+  updateArtifactPreviewUrl,
+  updateTaskStatus
+} from "../room-task-service.js";
 
 const roomParamsSchema = z
   .object({
     roomId: z.string().min(1)
+  })
+  .strict();
+
+const taskParamsSchema = z
+  .object({
+    roomId: z.string().min(1),
+    taskId: z.string().min(1)
+  })
+  .strict();
+
+const artifactParamsSchema = z
+  .object({
+    roomId: z.string().min(1),
+    artifactId: z.string().min(1)
   })
   .strict();
 
@@ -24,6 +46,39 @@ const createTaskBodySchema = z
       })
       .strict()
       .optional()
+  })
+  .strict();
+
+const updateTaskStatusBodySchema = z
+  .object({
+    status: taskStatusSchema
+  })
+  .strict();
+
+const appendTaskLogBodySchema = z
+  .object({
+    message: z.string().min(1)
+  })
+  .strict();
+
+const updateArtifactBodySchema = z
+  .object({
+    title: z.string().min(1).optional(),
+    status: artifactStatusSchema.optional(),
+    content: metadataSchema.optional()
+  })
+  .strict()
+  .refine((body) => body.title !== undefined || body.status !== undefined || body.content !== undefined);
+
+const patchArtifactBodySchema = z
+  .object({
+    patch: metadataSchema
+  })
+  .strict();
+
+const updateArtifactPreviewUrlBodySchema = z
+  .object({
+    previewUrl: z.string().url()
   })
   .strict();
 
@@ -68,6 +123,128 @@ export function registerTaskRoutes(server: FastifyInstance): void {
       task: bundle.task,
       artifact: bundle.artifact
     });
+  });
+
+  server.patch("/rooms/:roomId/tasks/:taskId/status", async (request) => {
+    const params = taskParamsSchema.parse(request.params);
+    const body = updateTaskStatusBodySchema.parse(request.body);
+    const user = await upsertCurrentUser(server.db, request);
+
+    await findAccessibleRoom(server, params.roomId, user.id);
+
+    const result = await updateTaskStatus(server, {
+      roomId: params.roomId,
+      taskId: params.taskId,
+      status: body.status
+    });
+
+    if (!result) {
+      notFound("Task not found.");
+    }
+
+    server.roomEvents.publish(result.event);
+
+    return {
+      task: result.task
+    };
+  });
+
+  server.post("/rooms/:roomId/tasks/:taskId/logs", async (request, reply) => {
+    const params = taskParamsSchema.parse(request.params);
+    const body = appendTaskLogBodySchema.parse(request.body);
+    const user = await upsertCurrentUser(server.db, request);
+
+    await findAccessibleRoom(server, params.roomId, user.id);
+
+    const result = await appendTaskLog(server, {
+      roomId: params.roomId,
+      taskId: params.taskId,
+      message: body.message
+    });
+
+    if (!result) {
+      notFound("Task not found.");
+    }
+
+    server.roomEvents.publish(result.event);
+
+    return reply.code(201).send({
+      log: result.log
+    });
+  });
+
+  server.patch("/rooms/:roomId/artifacts/:artifactId", async (request) => {
+    const params = artifactParamsSchema.parse(request.params);
+    const body = updateArtifactBodySchema.parse(request.body);
+    const user = await upsertCurrentUser(server.db, request);
+
+    await findAccessibleRoom(server, params.roomId, user.id);
+
+    const result = await updateArtifact(server, {
+      roomId: params.roomId,
+      artifactId: params.artifactId,
+      title: body.title,
+      status: body.status,
+      content: body.content
+    });
+
+    if (!result) {
+      notFound("Artifact not found.");
+    }
+
+    server.roomEvents.publish(result.event);
+
+    return {
+      artifact: result.artifact
+    };
+  });
+
+  server.post("/rooms/:roomId/artifacts/:artifactId/patches", async (request, reply) => {
+    const params = artifactParamsSchema.parse(request.params);
+    const body = patchArtifactBodySchema.parse(request.body);
+    const user = await upsertCurrentUser(server.db, request);
+
+    await findAccessibleRoom(server, params.roomId, user.id);
+
+    const result = await patchArtifact(server, {
+      roomId: params.roomId,
+      artifactId: params.artifactId,
+      patch: body.patch
+    });
+
+    if (!result) {
+      notFound("Artifact not found.");
+    }
+
+    server.roomEvents.publish(result.event);
+
+    return reply.code(201).send({
+      artifact: result.artifact
+    });
+  });
+
+  server.patch("/rooms/:roomId/artifacts/:artifactId/preview-url", async (request) => {
+    const params = artifactParamsSchema.parse(request.params);
+    const body = updateArtifactPreviewUrlBodySchema.parse(request.body);
+    const user = await upsertCurrentUser(server.db, request);
+
+    await findAccessibleRoom(server, params.roomId, user.id);
+
+    const result = await updateArtifactPreviewUrl(server, {
+      roomId: params.roomId,
+      artifactId: params.artifactId,
+      previewUrl: body.previewUrl
+    });
+
+    if (!result) {
+      notFound("Artifact not found.");
+    }
+
+    server.roomEvents.publish(result.event);
+
+    return {
+      artifact: result.artifact
+    };
   });
 }
 

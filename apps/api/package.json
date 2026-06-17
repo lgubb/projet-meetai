@@ -8,14 +8,16 @@
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc --noEmit",
     "lint": "eslint . --max-warnings=0",
-    "test": "node --test --import tsx src/shared-import.test.ts src/routes.test.ts"
+    "test": "WORKROOM_AUTH_MODE=dev node --test --import tsx src/auth.test.ts src/shared-import.test.ts src/routes.test.ts"
   },
   "dependencies": {
     "@clerk/fastify": "^3.1.33",
     "@fastify/websocket": "^11.2.0",
     "@jean/db": "workspace:*",
     "@jean/jean-core": "workspace:*",
+    "@jean/mcp": "workspace:*",
     "@jean/shared": "workspace:*",
+    "e2b": "^2.29.1",
     "fastify": "^5.0.0",
     "livekit-server-sdk": "^2.15.4",
     "zod": "^4.4.3"

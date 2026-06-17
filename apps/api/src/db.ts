@@ -3,6 +3,9 @@ import type { PrismaClient } from "@jean/db";
 export type ApiDatabase = Pick<
   PrismaClient,
   | "agent"
+  | "agentConnection"
+  | "approval"
+  | "auditLog"
   | "artifact"
   | "artifactVersion"
   | "organization"
