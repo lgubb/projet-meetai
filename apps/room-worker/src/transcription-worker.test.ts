@@ -108,6 +108,10 @@ test("readRoomWorkerConfig defaults Deepgram to multilingual streaming", () => {
   assert.equal(config.deepgram.model, "nova-3");
   assert.equal(config.deepgram.language, "multi");
   assert.equal(config.deepgram.endpointing, 100);
+  assert.equal(config.jeanVoice.enabled, true);
+  assert.equal(config.jeanVoice.model, "aura-2-thalia-en");
+  assert.equal(config.jeanVoice.sampleRate, 16000);
+  assert.equal(config.jeanVoice.minIntervalMs, 2500);
 });
 
 async function* createAudioTracks() {

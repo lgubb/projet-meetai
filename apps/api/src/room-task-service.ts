@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 import type { FastifyInstance } from "fastify";
 import type { Prisma } from "@jean/db";
 import {
@@ -32,6 +34,7 @@ export type CreateArtifactInput = {
   taskId: string;
   createdByUserId?: string | null;
   createdByAgentId?: string | null;
+  runId?: string | null;
   title: string;
   type: ArtifactType;
   content: Record<string, unknown>;
@@ -57,6 +60,53 @@ export type RoomTaskState = {
   task: RealtimeTask;
   artifacts: RealtimeArtifact[];
   logs: RealtimeTaskLog[];
+  runEvents: RoomAgentRunEvent[];
+};
+
+export type RoomAgentRunEvent = {
+  id: string;
+  roomId: string;
+  taskId: string | null;
+  artifactId: string | null;
+  runId: string;
+  agentId: string;
+  ownerUserId: string | null;
+  type: string;
+  severity: string;
+  visibility: string;
+  payload: Record<string, unknown> | null;
+  createdAt: string;
+};
+
+export type RoomArtifactFile = {
+  id: string;
+  roomId: string;
+  taskId: string | null;
+  artifactId: string;
+  path: string;
+  type: string;
+  language: string | null;
+  size: number;
+  contentHash: string;
+  latestVersion: {
+    id: string;
+    artifactVersionId: string | null;
+    runId: string | null;
+    version: number;
+    content: string;
+    contentHash: string;
+    size: number;
+    createdAt: string;
+  } | null;
+  latestDiff: {
+    id: string;
+    oldVersionId: string | null;
+    newVersionId: string;
+    unifiedDiff: string;
+    createdAt: string;
+  } | null;
+  createdAt: string;
+  updatedAt: string;
 };
 
 type TaskRecord = {
@@ -95,6 +145,41 @@ type ArtifactVersionRecord = {
   createdAt: Date;
 };
 
+type ArtifactFileRecord = {
+  id: string;
+  roomId: string;
+  taskId: string | null;
+  artifactId: string;
+  path: string;
+  type: string;
+  language: string | null;
+  size: number;
+  contentHash: string;
+  latestVersionId: string | null;
+  createdAt: Date;
+  updatedAt: Date;
+};
+
+type ArtifactFileVersionRecord = {
+  id: string;
+  artifactFileId: string;
+  artifactVersionId: string | null;
+  runId: string | null;
+  version: number;
+  content: string;
+  contentHash: string;
+  size: number;
+  createdAt: Date;
+};
+
+type ArtifactFileDiffRecord = {
+  id: string;
+  oldVersionId: string | null;
+  newVersionId: string;
+  unifiedDiff: string;
+  createdAt: Date;
+};
+
 type TaskEventRecord = {
   id: string;
   roomId: string;
@@ -102,6 +187,21 @@ type TaskEventRecord = {
   type: string;
   payload: unknown | null;
   occurredAt: Date;
+};
+
+type AgentRunEventRecord = {
+  id: string;
+  roomId: string;
+  taskId: string | null;
+  artifactId: string | null;
+  runId: string;
+  agentId: string;
+  ownerUserId: string | null;
+  type: string;
+  severity: string;
+  visibility: string;
+  payload: unknown | null;
+  createdAt: Date;
 };
 
 type AuditLogRecord = {
@@ -117,10 +217,19 @@ type AuditLogRecord = {
 type TaskWithArtifactsRecord = TaskRecord & {
   artifacts: ArtifactRecord[];
   events?: TaskEventRecord[];
+  agentRunEvents?: AgentRunEventRecord[];
 };
 
 type ArtifactWithVersionsRecord = ArtifactRecord & {
   versions: ArtifactVersionRecord[];
+};
+
+type ArtifactFileVersionWithDiffsRecord = ArtifactFileVersionRecord & {
+  nextDiffs?: ArtifactFileDiffRecord[];
+};
+
+type ArtifactFileWithVersionsRecord = ArtifactFileRecord & {
+  versions: ArtifactFileVersionWithDiffsRecord[];
 };
 
 export async function createTaskWithArtifact(
@@ -169,6 +278,11 @@ export async function createTaskWithArtifact(
       version: 1,
       content: input.artifact.content as Prisma.InputJsonValue
     }
+  });
+  await syncArtifactFilesFromContent(server, {
+    artifact,
+    artifactVersionId: version.id,
+    content: input.artifact.content
   });
 
   const serializedArtifact = serializeArtifact({
@@ -274,6 +388,12 @@ export async function createArtifactForTask(
       content: input.content as Prisma.InputJsonValue
     }
   });
+  await syncArtifactFilesFromContent(server, {
+    artifact,
+    artifactVersionId: version.id,
+    content: input.content,
+    runId: input.runId ?? null
+  });
   const serializedArtifact = serializeArtifact({
     ...artifact,
     versions: [version]
@@ -325,6 +445,11 @@ export async function listRoomTaskState(server: FastifyInstance, roomId: string)
         orderBy: {
           occurredAt: "asc"
         }
+      },
+      agentRunEvents: {
+        orderBy: {
+          createdAt: "asc"
+        }
       }
     },
     orderBy: {
@@ -335,8 +460,107 @@ export async function listRoomTaskState(server: FastifyInstance, roomId: string)
   return (tasks as TaskWithArtifactsRecord[]).map((task) => ({
     task: serializeTask(task),
     artifacts: task.artifacts.map(serializeArtifact),
-    logs: (task.events ?? []).map(serializeTaskLogEvent).filter(isPresent)
+    logs: (task.events ?? []).map(serializeTaskLogEvent).filter(isPresent),
+    runEvents: (task.agentRunEvents ?? []).map(serializeAgentRunEvent)
   }));
+}
+
+export async function getRoomTaskState(
+  server: FastifyInstance,
+  input: {
+    roomId: string;
+    taskId: string;
+  }
+): Promise<RoomTaskState | null> {
+  const task = await server.db.task.findFirst({
+    where: {
+      id: input.taskId,
+      roomId: input.roomId
+    },
+    include: {
+      artifacts: {
+        include: {
+          versions: {
+            orderBy: {
+              version: "desc"
+            },
+            take: 1
+          }
+        },
+        orderBy: {
+          createdAt: "asc"
+        }
+      },
+      events: {
+        where: {
+          type: "task.log"
+        },
+        orderBy: {
+          occurredAt: "asc"
+        }
+      },
+      agentRunEvents: {
+        orderBy: {
+          createdAt: "asc"
+        }
+      }
+    }
+  });
+
+  if (!task) {
+    return null;
+  }
+
+  const taskWithArtifacts = task as TaskWithArtifactsRecord;
+
+  return {
+    task: serializeTask(taskWithArtifacts),
+    artifacts: taskWithArtifacts.artifacts.map(serializeArtifact),
+    logs: (taskWithArtifacts.events ?? []).map(serializeTaskLogEvent).filter(isPresent),
+    runEvents: (taskWithArtifacts.agentRunEvents ?? []).map(serializeAgentRunEvent)
+  };
+}
+
+export async function listArtifactFiles(
+  server: FastifyInstance,
+  input: {
+    roomId: string;
+    artifactId: string;
+  }
+): Promise<RoomArtifactFile[] | null> {
+  const artifact = await findArtifactInRoom(server, input.roomId, input.artifactId);
+
+  if (!artifact) {
+    return null;
+  }
+
+  const files = (await server.db.artifactFile.findMany({
+    where: {
+      roomId: input.roomId,
+      artifactId: input.artifactId
+    },
+    include: {
+      versions: {
+        include: {
+          nextDiffs: {
+            orderBy: {
+              createdAt: "desc"
+            },
+            take: 1
+          }
+        },
+        orderBy: {
+          version: "desc"
+        },
+        take: 1
+      }
+    },
+    orderBy: {
+      path: "asc"
+    }
+  })) as ArtifactFileWithVersionsRecord[];
+
+  return files.map(serializeArtifactFile);
 }
 
 export async function updateTaskStatus(
@@ -475,6 +699,7 @@ export async function updateArtifact(
     title?: string;
     status?: ArtifactStatus;
     content?: Record<string, unknown>;
+    runId?: string | null;
   }
 ): Promise<{ artifact: RealtimeArtifact; event: RealtimeRoomEvent } | null> {
   const existingArtifact = await findArtifactInRoom(server, input.roomId, input.artifactId);
@@ -515,6 +740,14 @@ export async function updateArtifact(
           content: input.content,
           latestVersion
         });
+  if (input.content !== undefined && version) {
+    await syncArtifactFilesFromContent(server, {
+      artifact: existingArtifact,
+      artifactVersionId: version.id,
+      content: input.content,
+      runId: input.runId ?? null
+    });
+  }
   const serializedArtifact = serializeArtifact({
     ...artifact,
     versions: version ? [version] : []
@@ -546,6 +779,7 @@ export async function patchArtifact(
     roomId: string;
     artifactId: string;
     patch: Record<string, unknown>;
+    runId?: string | null;
   }
 ): Promise<{ artifact: RealtimeArtifact; event: RealtimeRoomEvent } | null> {
   const existingArtifact = await findArtifactInRoom(server, input.roomId, input.artifactId);
@@ -572,6 +806,14 @@ export async function patchArtifact(
     content,
     latestVersion
   });
+  if (Array.isArray(input.patch.files)) {
+    await syncArtifactFilesFromContent(server, {
+      artifact: existingArtifact,
+      artifactVersionId: version.id,
+      content,
+      runId: input.runId ?? null
+    });
+  }
   const serializedArtifact = serializeArtifact({
     ...artifact,
     versions: [version]
@@ -867,6 +1109,46 @@ export function serializeArtifact(artifact: ArtifactRecord): RealtimeArtifact {
   };
 }
 
+function serializeArtifactFile(file: ArtifactFileWithVersionsRecord): RoomArtifactFile {
+  const latestVersion = file.versions[0] ?? null;
+  const latestDiff = latestVersion?.nextDiffs?.[0] ?? null;
+
+  return {
+    id: file.id,
+    roomId: file.roomId,
+    taskId: file.taskId,
+    artifactId: file.artifactId,
+    path: file.path,
+    type: file.type,
+    language: file.language,
+    size: file.size,
+    contentHash: file.contentHash,
+    latestVersion: latestVersion
+      ? {
+          id: latestVersion.id,
+          artifactVersionId: latestVersion.artifactVersionId,
+          runId: latestVersion.runId,
+          version: latestVersion.version,
+          content: latestVersion.content,
+          contentHash: latestVersion.contentHash,
+          size: latestVersion.size,
+          createdAt: latestVersion.createdAt.toISOString()
+        }
+      : null,
+    latestDiff: latestDiff
+      ? {
+          id: latestDiff.id,
+          oldVersionId: latestDiff.oldVersionId,
+          newVersionId: latestDiff.newVersionId,
+          unifiedDiff: latestDiff.unifiedDiff,
+          createdAt: latestDiff.createdAt.toISOString()
+        }
+      : null,
+    createdAt: file.createdAt.toISOString(),
+    updatedAt: file.updatedAt.toISOString()
+  };
+}
+
 async function recordTaskEvent(
   server: FastifyInstance,
   input: {
@@ -924,6 +1206,23 @@ function serializeTaskLog(event: TaskEventRecord, message: string): RealtimeTask
   };
 }
 
+function serializeAgentRunEvent(event: AgentRunEventRecord): RoomAgentRunEvent {
+  return {
+    id: event.id,
+    roomId: event.roomId,
+    taskId: event.taskId,
+    artifactId: event.artifactId,
+    runId: event.runId,
+    agentId: event.agentId,
+    ownerUserId: event.ownerUserId,
+    type: event.type,
+    severity: event.severity,
+    visibility: event.visibility,
+    payload: isRecord(event.payload) ? event.payload : null,
+    createdAt: event.createdAt.toISOString()
+  };
+}
+
 async function findTaskInRoom(server: FastifyInstance, roomId: string, taskId: string): Promise<TaskRecord | null> {
   return server.db.task.findFirst({
     where: {
@@ -971,6 +1270,199 @@ async function createNextArtifactVersion(
       content: input.content as Prisma.InputJsonValue
     }
   }) as Promise<ArtifactVersionRecord>;
+}
+
+async function syncArtifactFilesFromContent(
+  server: FastifyInstance,
+  input: {
+    artifact: ArtifactRecord;
+    artifactVersionId: string;
+    content: Record<string, unknown>;
+    runId?: string | null;
+  }
+): Promise<void> {
+  const files = extractArtifactFiles(input.content);
+
+  for (const fileInput of files) {
+    const existingFile = (await server.db.artifactFile.findUnique({
+      where: {
+        artifactId_path: {
+          artifactId: input.artifact.id,
+          path: fileInput.path
+        }
+      }
+    })) as ArtifactFileRecord | null;
+    const artifactFile =
+      existingFile ??
+      ((await server.db.artifactFile.create({
+        data: {
+          roomId: input.artifact.roomId,
+          taskId: input.artifact.taskId,
+          artifactId: input.artifact.id,
+          path: fileInput.path,
+          type: fileInput.type,
+          language: fileInput.language,
+          size: fileInput.size,
+          contentHash: fileInput.contentHash,
+          latestVersionId: null
+        }
+      })) as ArtifactFileRecord);
+    const latestFileVersion = (await server.db.artifactFileVersion.findFirst({
+      where: {
+        artifactFileId: artifactFile.id
+      },
+      orderBy: {
+        version: "desc"
+      }
+    })) as ArtifactFileVersionRecord | null;
+
+    if (latestFileVersion?.contentHash === fileInput.contentHash) {
+      await server.db.artifactFile.update({
+        where: {
+          id: artifactFile.id
+        },
+        data: {
+          type: fileInput.type,
+          language: fileInput.language,
+          size: fileInput.size,
+          contentHash: fileInput.contentHash,
+          latestVersionId: latestFileVersion.id
+        }
+      });
+      continue;
+    }
+
+    const fileVersion = (await server.db.artifactFileVersion.create({
+      data: {
+        artifactFileId: artifactFile.id,
+        artifactVersionId: input.artifactVersionId,
+        runId: input.runId ?? null,
+        version: (latestFileVersion?.version ?? 0) + 1,
+        content: fileInput.content,
+        contentHash: fileInput.contentHash,
+        size: fileInput.size
+      }
+    })) as ArtifactFileVersionRecord;
+
+    await server.db.artifactFile.update({
+      where: {
+        id: artifactFile.id
+      },
+      data: {
+        type: fileInput.type,
+        language: fileInput.language,
+        size: fileInput.size,
+        contentHash: fileInput.contentHash,
+        latestVersionId: fileVersion.id
+      }
+    });
+
+    await server.db.artifactFileDiff.create({
+      data: {
+        oldVersionId: latestFileVersion?.id ?? null,
+        newVersionId: fileVersion.id,
+        unifiedDiff: createUnifiedDiff(fileInput.path, latestFileVersion?.content ?? "", fileInput.content)
+      }
+    });
+  }
+}
+
+function extractArtifactFiles(content: Record<string, unknown>): Array<{
+  path: string;
+  type: string;
+  language: string | null;
+  content: string;
+  contentHash: string;
+  size: number;
+}> {
+  if (!Array.isArray(content.files)) {
+    return [];
+  }
+
+  const files: Array<{
+    path: string;
+    type: string;
+    language: string | null;
+    content: string;
+    contentHash: string;
+    size: number;
+  }> = [];
+  const seenPaths = new Set<string>();
+
+  for (const file of content.files) {
+    if (!isRecord(file) || typeof file.path !== "string") {
+      continue;
+    }
+
+    const path = normalizeArtifactPath(file.path);
+
+    if (!path || seenPaths.has(path)) {
+      continue;
+    }
+
+    const fileContent = typeof file.content === "string" ? file.content : String(file.content ?? "");
+    const detected = detectFileMetadata(path, file);
+
+    files.push({
+      path,
+      type: detected.type,
+      language: detected.language,
+      content: fileContent,
+      contentHash: hashContent(fileContent),
+      size: Buffer.byteLength(fileContent, "utf8")
+    });
+    seenPaths.add(path);
+  }
+
+  return files;
+}
+
+function normalizeArtifactPath(path: string): string {
+  return path.trim().replace(/^\/+/, "");
+}
+
+function detectFileMetadata(path: string, file: Record<string, unknown>): { type: string; language: string | null } {
+  if (typeof file.type === "string" && file.type.trim()) {
+    return {
+      type: file.type.trim(),
+      language: typeof file.language === "string" && file.language.trim() ? file.language.trim() : null
+    };
+  }
+
+  const extension = path.split(".").pop()?.toLowerCase() ?? "";
+  const languageByExtension: Record<string, string> = {
+    css: "css",
+    html: "html",
+    js: "javascript",
+    json: "json",
+    jsx: "javascript",
+    md: "markdown",
+    ts: "typescript",
+    tsx: "typescript"
+  };
+  const language = typeof file.language === "string" && file.language.trim() ? file.language.trim() : languageByExtension[extension] ?? null;
+
+  return {
+    type: language ?? "text",
+    language
+  };
+}
+
+function hashContent(content: string): string {
+  return createHash("sha256").update(content).digest("hex");
+}
+
+function createUnifiedDiff(path: string, oldContent: string, newContent: string): string {
+  const oldLines = oldContent.split("\n");
+  const newLines = newContent.split("\n");
+
+  return [
+    `--- ${oldContent ? `a/${path}` : "/dev/null"}`,
+    `+++ b/${path}`,
+    "@@",
+    ...oldLines.filter((line) => line.length > 0).map((line) => `-${line}`),
+    ...newLines.filter((line) => line.length > 0).map((line) => `+${line}`)
+  ].join("\n");
 }
 
 function replayEventFromTaskEvent(taskEvent: TaskEventRecord): RealtimeRoomEvent | null {

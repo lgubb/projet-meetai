@@ -4,6 +4,7 @@
     "DATABASE_URL",
     "WORKROOM_AUTH_MODE",
     "WORKROOM_API_URL",
+    "WORKROOM_BRIDGE_TASK_TIMEOUT_MS",
     "WORKROOM_ROOM_WORKER_MODE",
     "NEXT_PUBLIC_WORKROOM_WS_URL",
     "WORKROOM_ROOM_ID",
@@ -47,6 +48,9 @@
       "outputs": []
     },
     "db:generate": {
+      "cache": false
+    },
+    "db:deploy": {
       "cache": false
     },
     "db:migrate": {

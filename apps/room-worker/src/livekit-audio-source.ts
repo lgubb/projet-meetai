@@ -19,9 +19,11 @@ export type LiveKitAudioSourceOptions = {
   name?: string;
   sampleRate?: number;
   channels?: number;
+  canPublish?: boolean;
 };
 
 export type LiveKitAudioSource = AsyncIterable<HumanAudioTrack> & {
+  room: Room;
   disconnect(): Promise<void>;
 };
 
@@ -51,6 +53,7 @@ export async function createLiveKitAudioSource(options: LiveKitAudioSourceOption
 
   // TODO: production scaling should supervise one LiveKit source per active room and shard by roomId.
   return {
+    room,
     disconnect: () => room.disconnect(),
     [Symbol.asyncIterator]: () => queue[Symbol.asyncIterator]()
   };
@@ -66,7 +69,7 @@ async function issueSystemToken(options: LiveKitAudioSourceOptions, identity: st
   token.addGrant({
     room: options.roomId,
     roomJoin: true,
-    canPublish: false,
+    canPublish: options.canPublish ?? false,
     canPublishData: false,
     canSubscribe: true
   });

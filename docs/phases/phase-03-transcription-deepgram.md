@@ -17,6 +17,10 @@ Le choix cle : la transcription tourne dans un worker separe, pas directement da
 - Protection optionnelle de l'ingestion par `WORKROOM_WORKER_TOKEN`.
 - Persistance des transcripts finaux dans `TranscriptSegment`.
 - Diffusion des transcripts en live via WebSocket dans la room.
+- Voix courte de Jean via Deepgram TTS quand le worker reel voit un event
+  `agent.speech`.
+- Publication audio LiveKit sur une piste systeme `jean-voice`, avec fallback
+  texte-only si la synthese ou la publication audio echoue.
 
 ## Pourquoi c'est important
 
@@ -45,6 +49,9 @@ Le pipeline est decoupe en petits roles :
 3. `transcription-worker.ts` convertit ces resultats en events Workroom valides.
 4. `workroom-api.ts` poste ces events a l'API.
 5. `routes/room-events.ts` valide, persiste si besoin, puis publie.
+6. `jean-voice.ts` ecoute les `agent.speech` via WebSocket room authentifie
+   par worker token, throttle les phrases et appelle le provider TTS.
+7. `livekit-voice-output.ts` transforme le PCM TTS en frames audio LiveKit.
 
 Cette separation permet de tester la transcription sans se connecter a LiveKit ou Deepgram a chaque fois.
 
@@ -55,9 +62,12 @@ Cette separation permet de tester la transcription sans se connecter a LiveKit o
 - `apps/room-worker/src/livekit-audio-source.ts` : source audio LiveKit.
 - `apps/room-worker/src/deepgram-stt.ts` : integration Deepgram.
 - `apps/room-worker/src/transcription-worker.ts` : conversion audio -> events transcript.
+- `apps/room-worker/src/deepgram-tts.ts` : integration Deepgram text-to-speech.
+- `apps/room-worker/src/jean-voice.ts` : pipeline `agent.speech` -> TTS.
+- `apps/room-worker/src/livekit-voice-output.ts` : publication audio LiveKit.
 - `apps/room-worker/src/workroom-api.ts` : publication vers l'API.
 - `apps/api/src/routes/room-events.ts` : ingestion interne, persistance et broadcast.
-- `apps/room-worker/src/transcription-worker.test.ts` : tests du worker.
+- `apps/room-worker/src/*.test.ts` : tests transcription, TTS et fallback voix.
 
 ## Limite actuelle
 

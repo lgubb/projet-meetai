@@ -62,6 +62,14 @@ export function registerRoomEventRoutes(server: FastifyInstance, options: Regist
   server.get("/rooms/:roomId/events", { websocket: true }, async (socket, request) => {
     try {
       const params = roomParamsSchema.parse(request.params);
+      const workerToken = options.workerToken ?? process.env.WORKROOM_WORKER_TOKEN ?? null;
+
+      if (isWorkerTokenRequest(request, workerToken)) {
+        await findRoomById(server, params.roomId);
+        server.roomEvents.join(params.roomId, socket);
+        return;
+      }
+
       const user = await upsertRoomEventUser(server, request);
       await findAccessibleRoom(server, params.roomId, user.id);
 
@@ -82,15 +90,7 @@ export function registerRoomEventRoutes(server: FastifyInstance, options: Regist
       throw new HttpError(400, "Event roomId must match the route roomId.");
     }
 
-    const room = await server.db.room.findUnique({
-      where: {
-        id: params.roomId
-      }
-    });
-
-    if (!room) {
-      notFound("Room not found.");
-    }
+    const room = await findRoomById(server, params.roomId);
 
     const eventToPublish =
       event.type === "transcript.final" ? await persistFinalTranscriptEvent(server, event) : event;
@@ -153,16 +153,32 @@ async function findAccessibleRoom(server: FastifyInstance, roomId: string, userI
   return room;
 }
 
+async function findRoomById(server: FastifyInstance, roomId: string) {
+  const room = await server.db.room.findUnique({
+    where: {
+      id: roomId
+    }
+  });
+
+  if (!room) {
+    notFound("Room not found.");
+  }
+
+  return room;
+}
+
 function requireWorkerToken(request: FastifyRequest, workerToken: string | null): void {
   if (!workerToken) {
     return;
   }
 
-  const authorization = request.headers.authorization;
-
-  if (authorization !== `Bearer ${workerToken}`) {
+  if (!isWorkerTokenRequest(request, workerToken)) {
     unauthorized("Invalid worker token.");
   }
+}
+
+function isWorkerTokenRequest(request: FastifyRequest, workerToken: string | null): boolean {
+  return Boolean(workerToken && request.headers.authorization === `Bearer ${workerToken}`);
 }
 
 async function persistFinalTranscriptEvent(

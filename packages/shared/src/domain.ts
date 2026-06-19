@@ -6,6 +6,9 @@ export type UserRole = z.infer<typeof userRoleSchema>;
 export const roomStatusSchema = z.enum(["CREATED", "LIVE", "ENDED", "ARCHIVED"]);
 export type RoomStatus = z.infer<typeof roomStatusSchema>;
 
+export const roomTemplateIdSchema = z.enum(["blank", "product_jam", "research_call", "prototype_session"]);
+export type RoomTemplateId = z.infer<typeof roomTemplateIdSchema>;
+
 export const participantRoleSchema = z.enum(["HOST", "MEMBER", "GUEST", "OBSERVER", "AGENT"]);
 export type ParticipantRole = z.infer<typeof participantRoleSchema>;
 
@@ -83,6 +86,7 @@ export const roomEventTypeSchema = z.enum([
   "AGENT_RUN_STARTED",
   "AGENT_RUN_EVENT",
   "AGENT_RUN_FINISHED",
+  "AGENT_TOOL_CALL_BLOCKED",
   "TASK_CREATED",
   "TASK_ASSIGNED",
   "TASK_STATUS_CHANGED",
@@ -92,6 +96,9 @@ export const roomEventTypeSchema = z.enum([
   "ARTIFACT_PREVIEW_SET",
   "APPROVAL_REQUESTED",
   "APPROVAL_RESOLVED",
+  "LOCAL_ACTION_STARTED",
+  "LOCAL_ACTION_FINISHED",
+  "LOCAL_ACTION_FAILED",
   "USER_INPUT_REQUESTED",
   "SANDBOX_SESSION_CREATED",
   "SANDBOX_FILES_WRITTEN",
@@ -209,6 +216,7 @@ export const agentRunSchema = z
     id: idSchema,
     roomId: idSchema,
     agentId: idSchema,
+    ownerUserId: idSchema.nullable(),
     taskId: idSchema.nullable(),
     status: agentRunStatusSchema,
     startedAt: isoDateTimeSchema,

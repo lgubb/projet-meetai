@@ -31,9 +31,12 @@ enum AgentProvider {
   NATIVE
   MCP
   CODEX
+  CLAUDE_CODE
   LOVABLE
+  V0
   PERPLEXITY
   E2B
+  CUSTOM
 }
 
 enum AgentTransport {
@@ -90,6 +93,45 @@ enum ApprovalStatus {
   CANCELED
 }
 
+enum AgentRunStatus {
+  PENDING
+  RUNNING
+  WAITING_FOR_APPROVAL
+  COMPLETED
+  FAILED
+  CANCELED
+}
+
+enum SandboxProvider {
+  LOCAL_MOCK
+  E2B
+  VERCEL
+  CUSTOM
+}
+
+enum SandboxSessionStatus {
+  CREATED
+  READY
+  RUNNING
+  STOPPED
+  FAILED
+}
+
+enum AgentToolCallStatus {
+  RUNNING
+  SUCCEEDED
+  FAILED
+  BLOCKED
+}
+
+enum LocalAgentPairingStatus {
+  PENDING
+  CONSUMED
+  CODEX_AUTH_ERROR
+  BRIDGE_ERROR
+  EXPIRED
+}
+
 model User {
   id        String   @id @default(cuid())
   email     String   @unique
@@ -107,6 +149,13 @@ model User {
   decidedApprovals   Approval[]           @relation("ApprovalDecidedByUser")
   transcriptSegments TranscriptSegment[]
   auditLogs          AuditLog[]           @relation("AuditActorUser")
+  localAgentPairings LocalAgentPairingCode[]
+  ownedAgentRuns     AgentRun[]           @relation("AgentRunOwner")
+  ownedAgentRunEvents AgentRunEvent[]     @relation("AgentRunEventOwner")
+  createdRoomComments RoomComment[]
+  billingWaitlistEntries BillingWaitlistEntry[]
+  providerCostEntries ProviderCostEntry[]
+  updatedPolicyRuleOverrides OrganizationPolicyRuleOverride[] @relation("PolicyRuleOverrideUpdatedByUser")
 }
 
 model Organization {
@@ -119,6 +168,82 @@ model Organization {
   rooms     Room[]
   agents    Agent[]
   auditLogs AuditLog[]
+  billingWaitlistEntries BillingWaitlistEntry[]
+  providerCostEntries ProviderCostEntry[]
+  providerExchangeRates ProviderExchangeRate[]
+  policyRuleOverrides OrganizationPolicyRuleOverride[]
+}
+
+model OrganizationPolicyRuleOverride {
+  id              String        @id @default(cuid())
+  organizationId  String
+  ruleId          String
+  riskLevel       TaskRiskLevel
+  updatedByUserId String?
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  organization  Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  updatedByUser User?        @relation("PolicyRuleOverrideUpdatedByUser", fields: [updatedByUserId], references: [id], onDelete: SetNull)
+
+  @@unique([organizationId, ruleId])
+  @@index([organizationId])
+  @@index([updatedByUserId])
+}
+
+model BillingWaitlistEntry {
+  id              String   @id @default(cuid())
+  organizationId  String
+  createdByUserId String
+  email           String
+  name            String?
+  note            String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  organization  Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  createdByUser User         @relation(fields: [createdByUserId], references: [id], onDelete: Cascade)
+
+  @@unique([organizationId, email])
+  @@index([createdByUserId])
+}
+
+model ProviderCostEntry {
+  id              String   @id @default(cuid())
+  organizationId  String
+  createdByUserId String
+  provider        String
+  amountCents     Int
+  currency        String   @default("USD")
+  periodStart     DateTime
+  periodEnd       DateTime
+  sourceUrl       String?
+  note            String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  organization  Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  createdByUser User         @relation(fields: [createdByUserId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId, periodStart])
+  @@index([createdByUserId])
+}
+
+model ProviderExchangeRate {
+  id                String   @id @default(cuid())
+  organizationId    String
+  sourceCurrency    String
+  reportingCurrency String
+  rateBps           Int
+  effectiveAt       DateTime
+  sourceUrl         String?
+  note              String?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId, sourceCurrency, reportingCurrency, effectiveAt])
 }
 
 model OrganizationMember {
@@ -152,9 +277,16 @@ model Room {
   tasks              Task[]
   taskEvents         TaskEvent[]
   artifacts          Artifact[]
+  agentRuns          AgentRun[]
+  agentRunEvents     AgentRunEvent[]
+  agentToolCalls     AgentToolCall[]
+  artifactFiles      ArtifactFile[]
+  sandboxSessions    SandboxSession[]
+  comments           RoomComment[]
   approvals          Approval[]
   transcriptSegments TranscriptSegment[]
   auditLogs          AuditLog[]
+  localAgentPairings LocalAgentPairingCode[]
 
   @@index([organizationId, status])
   @@index([createdByUserId])
@@ -198,8 +330,35 @@ model Agent {
   requestedApprovals Approval[]          @relation("ApprovalRequestedByAgent")
   transcriptSegments TranscriptSegment[]
   auditLogs          AuditLog[]          @relation("AuditActorAgent")
+  localAgentPairings LocalAgentPairingCode[]
+  agentRuns          AgentRun[]
+  agentRunEvents     AgentRunEvent[]
+  agentToolCalls     AgentToolCall[]
+  sandboxSessions    SandboxSession[]
 
   @@index([organizationId, provider])
+}
+
+model LocalAgentPairingCode {
+  id              String                  @id @default(cuid())
+  roomId          String
+  createdByUserId String
+  agentId         String?
+  codeHash        String                  @unique
+  status          LocalAgentPairingStatus @default(PENDING)
+  errorMessage    String?
+  expiresAt       DateTime
+  consumedAt      DateTime?
+  createdAt       DateTime                @default(now())
+  updatedAt       DateTime                @updatedAt
+
+  room          Room  @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  createdByUser User  @relation(fields: [createdByUserId], references: [id], onDelete: Cascade)
+  agent         Agent? @relation(fields: [agentId], references: [id], onDelete: SetNull)
+
+  @@index([roomId, status, expiresAt])
+  @@index([createdByUserId])
+  @@index([agentId])
 }
 
 model AgentConnection {
@@ -236,6 +395,11 @@ model Task {
   events         TaskEvent[]
   artifacts      Artifact[]
   approvals      Approval[]
+  agentRuns      AgentRun[]
+  agentRunEvents AgentRunEvent[]
+  agentToolCalls AgentToolCall[]
+  artifactFiles  ArtifactFile[]
+  sandboxSessions SandboxSession[]
 
   @@index([roomId, status])
   @@index([createdByUserId])
@@ -275,6 +439,10 @@ model Artifact {
   createdByUser  User?             @relation("ArtifactCreatedByUser", fields: [createdByUserId], references: [id])
   createdByAgent Agent?            @relation("ArtifactCreatedByAgent", fields: [createdByAgentId], references: [id])
   versions       ArtifactVersion[]
+  files          ArtifactFile[]
+  agentRunEvents AgentRunEvent[]
+  agentToolCalls AgentToolCall[]
+  comments       RoomComment[]
   approvals      Approval[]
 
   @@index([roomId, type])
@@ -296,10 +464,211 @@ model ArtifactVersion {
   artifact       Artifact @relation(fields: [artifactId], references: [id], onDelete: Cascade)
   createdByUser  User?    @relation("ArtifactVersionCreatedByUser", fields: [createdByUserId], references: [id])
   createdByAgent Agent?   @relation("ArtifactVersionCreatedByAgent", fields: [createdByAgentId], references: [id])
+  fileVersions   ArtifactFileVersion[]
 
   @@unique([artifactId, version])
   @@index([createdByUserId])
   @@index([createdByAgentId])
+}
+
+model AgentRun {
+  id          String         @id @default(cuid())
+  roomId      String
+  taskId      String?
+  agentId     String
+  ownerUserId String?
+  status      AgentRunStatus @default(PENDING)
+  startedAt   DateTime       @default(now())
+  finishedAt  DateTime?
+  summary     String?
+  metadata    Json?
+  createdAt   DateTime       @default(now())
+  updatedAt   DateTime       @updatedAt
+
+  room         Room                  @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  task         Task?                 @relation(fields: [taskId], references: [id], onDelete: SetNull)
+  agent        Agent                 @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  ownerUser    User?                 @relation("AgentRunOwner", fields: [ownerUserId], references: [id], onDelete: SetNull)
+  events       AgentRunEvent[]
+  fileVersions ArtifactFileVersion[]
+
+  @@index([roomId, status])
+  @@index([taskId, status])
+  @@index([agentId, status])
+  @@index([ownerUserId])
+}
+
+model AgentRunEvent {
+  id          String   @id @default(cuid())
+  roomId      String
+  taskId      String?
+  artifactId  String?
+  runId       String
+  agentId     String
+  ownerUserId String?
+  type        String
+  severity    String   @default("info")
+  visibility  String   @default("room")
+  payload     Json?
+  createdAt   DateTime @default(now())
+
+  room      Room      @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  task      Task?     @relation(fields: [taskId], references: [id], onDelete: SetNull)
+  artifact  Artifact? @relation(fields: [artifactId], references: [id], onDelete: SetNull)
+  run       AgentRun  @relation(fields: [runId], references: [id], onDelete: Cascade)
+  agent     Agent     @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  ownerUser User?     @relation("AgentRunEventOwner", fields: [ownerUserId], references: [id], onDelete: SetNull)
+  comments  RoomComment[]
+
+  @@index([roomId, createdAt])
+  @@index([taskId, createdAt])
+  @@index([artifactId])
+  @@index([runId, createdAt])
+  @@index([agentId, createdAt])
+  @@index([ownerUserId])
+}
+
+model ArtifactFile {
+  id              String   @id @default(cuid())
+  roomId          String
+  taskId          String?
+  artifactId      String
+  path            String
+  type            String
+  language        String?
+  size            Int
+  contentHash     String
+  latestVersionId String?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  room     Room                  @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  task     Task?                 @relation(fields: [taskId], references: [id], onDelete: SetNull)
+  artifact Artifact              @relation(fields: [artifactId], references: [id], onDelete: Cascade)
+  versions ArtifactFileVersion[]
+  comments RoomComment[]
+
+  @@unique([artifactId, path])
+  @@index([roomId, path])
+  @@index([taskId])
+  @@index([contentHash])
+}
+
+model RoomComment {
+  id              String   @id @default(cuid())
+  roomId          String
+  artifactId      String?
+  artifactFileId  String?
+  agentRunEventId String?
+  createdByUserId String?
+  lineNumber      Int?
+  body            String
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  room          Room           @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  artifact      Artifact?      @relation(fields: [artifactId], references: [id], onDelete: Cascade)
+  artifactFile  ArtifactFile?  @relation(fields: [artifactFileId], references: [id], onDelete: Cascade)
+  agentRunEvent AgentRunEvent? @relation(fields: [agentRunEventId], references: [id], onDelete: Cascade)
+  createdByUser User?          @relation(fields: [createdByUserId], references: [id], onDelete: SetNull)
+
+  @@index([roomId, createdAt])
+  @@index([artifactId])
+  @@index([artifactFileId])
+  @@index([agentRunEventId])
+  @@index([createdByUserId])
+}
+
+model ArtifactFileVersion {
+  id                String   @id @default(cuid())
+  artifactFileId    String
+  artifactVersionId String?
+  runId             String?
+  version           Int
+  content           String
+  contentHash       String
+  size              Int
+  createdAt         DateTime @default(now())
+
+  artifactFile    ArtifactFile       @relation(fields: [artifactFileId], references: [id], onDelete: Cascade)
+  artifactVersion ArtifactVersion?   @relation(fields: [artifactVersionId], references: [id], onDelete: SetNull)
+  run             AgentRun?          @relation(fields: [runId], references: [id], onDelete: SetNull)
+  previousDiffs   ArtifactFileDiff[] @relation("ArtifactFileDiffOldVersion")
+  nextDiffs       ArtifactFileDiff[] @relation("ArtifactFileDiffNewVersion")
+
+  @@unique([artifactFileId, version])
+  @@index([artifactVersionId])
+  @@index([runId])
+  @@index([contentHash])
+}
+
+model ArtifactFileDiff {
+  id           String   @id @default(cuid())
+  oldVersionId String?
+  newVersionId String
+  unifiedDiff  String
+  createdAt    DateTime @default(now())
+
+  oldVersion ArtifactFileVersion? @relation("ArtifactFileDiffOldVersion", fields: [oldVersionId], references: [id], onDelete: SetNull)
+  newVersion ArtifactFileVersion  @relation("ArtifactFileDiffNewVersion", fields: [newVersionId], references: [id], onDelete: Cascade)
+
+  @@index([oldVersionId])
+  @@index([newVersionId])
+}
+
+model SandboxSession {
+  id               String               @id @default(cuid())
+  roomId           String
+  taskId           String?
+  createdByAgentId String?
+  provider         SandboxProvider
+  status           SandboxSessionStatus @default(CREATED)
+  workdir          String
+  previewUrl       String?
+  metadata         Json?
+  createdAt        DateTime             @default(now())
+  updatedAt        DateTime             @updatedAt
+
+  room           Room   @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  task           Task?  @relation(fields: [taskId], references: [id], onDelete: SetNull)
+  createdByAgent Agent? @relation(fields: [createdByAgentId], references: [id], onDelete: SetNull)
+
+  @@index([roomId, status])
+  @@index([taskId])
+  @@index([createdByAgentId])
+}
+
+model AgentToolCall {
+  id           String              @id @default(cuid())
+  roomId       String
+  taskId       String?
+  artifactId   String?
+  approvalId   String?
+  agentId      String
+  toolName     String
+  status       AgentToolCallStatus @default(RUNNING)
+  arguments    Json?
+  result       Json?
+  errorCode    Int?
+  errorMessage String?
+  startedAt    DateTime            @default(now())
+  finishedAt   DateTime?
+  durationMs   Int?
+  createdAt    DateTime            @default(now())
+  updatedAt    DateTime            @updatedAt
+
+  room     Room      @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  task     Task?     @relation(fields: [taskId], references: [id], onDelete: SetNull)
+  artifact Artifact? @relation(fields: [artifactId], references: [id], onDelete: SetNull)
+  approval Approval? @relation(fields: [approvalId], references: [id], onDelete: SetNull)
+  agent    Agent     @relation(fields: [agentId], references: [id], onDelete: Cascade)
+
+  @@index([roomId, startedAt])
+  @@index([taskId, startedAt])
+  @@index([artifactId, startedAt])
+  @@index([approvalId])
+  @@index([agentId, startedAt])
+  @@index([roomId, status])
 }
 
 model Approval {
@@ -322,6 +691,7 @@ model Approval {
   requestedByUser  User?     @relation("ApprovalRequestedByUser", fields: [requestedByUserId], references: [id])
   requestedByAgent Agent?    @relation("ApprovalRequestedByAgent", fields: [requestedByAgentId], references: [id])
   decidedByUser    User?     @relation("ApprovalDecidedByUser", fields: [decidedByUserId], references: [id])
+  agentToolCalls   AgentToolCall[]
 
   @@index([roomId, status])
   @@index([taskId, status])

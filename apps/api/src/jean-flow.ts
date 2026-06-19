@@ -67,7 +67,7 @@ export async function handleJeanTranscriptFinalEvent(
   );
 }
 
-async function ensureJeanAgent(server: FastifyInstance, organizationId: string): Promise<JeanAgentRecord> {
+export async function ensureJeanAgent(server: FastifyInstance, organizationId: string): Promise<JeanAgentRecord> {
   const existingAgent = await server.db.agent.findFirst({
     where: {
       organizationId,

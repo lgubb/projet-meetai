@@ -8,7 +8,7 @@
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc --noEmit",
     "lint": "eslint . --max-warnings=0",
-    "test": "node --test --import tsx src/transcription-worker.test.ts"
+    "test": "node --test --import tsx src/*.test.ts"
   },
   "dependencies": {
     "@deepgram/sdk": "^5.4.0",

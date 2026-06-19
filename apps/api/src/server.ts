@@ -8,18 +8,23 @@ import { HttpError } from "./errors.js";
 import { createLiveKitTokenIssuer, type LiveKitTokenIssuer } from "./livekit.js";
 import { registerAuth } from "./plugins/auth.js";
 import { registerDb } from "./plugins/db.js";
+import { registerLocalAgentBridge } from "./plugins/local-agent-bridge.js";
 import { registerRoomEvents } from "./plugins/room-events.js";
 import { registerOrganizationRoutes } from "./routes/organizations.js";
+import { registerBridgeRoutes } from "./routes/bridge.js";
+import { registerLocalCodexRoutes } from "./routes/local-codex.js";
 import { registerRoomEventRoutes } from "./routes/room-events.js";
 import { registerRoomMcpRoutes } from "./routes/room-mcp.js";
 import { registerRoomRoutes } from "./routes/rooms.js";
 import { registerTaskRoutes } from "./routes/tasks.js";
 import type { AgentConnector } from "./jean-task-runner.js";
+import type { LocalAgentBridgeBroker } from "./local-agent-bridge.js";
 import type { RoomEventBus } from "./room-event-bus.js";
 
 export type BuildServerOptions = {
   agentConnectors?: AgentConnector[];
   db?: ApiDatabase;
+  localAgentBridge?: LocalAgentBridgeBroker;
   liveKitTokenIssuer?: LiveKitTokenIssuer;
   logger?: boolean;
   roomEventBus?: RoomEventBus;
@@ -34,6 +39,7 @@ export function buildServer(options: BuildServerOptions = {}) {
   registerDb(server, options.db);
   registerAuth(server);
   registerRoomEvents(server, options.roomEventBus);
+  registerLocalAgentBridge(server, options.localAgentBridge);
 
   server.get("/health", async (): Promise<HealthStatus> => ({
     service: "api",
@@ -43,7 +49,11 @@ export function buildServer(options: BuildServerOptions = {}) {
   registerOrganizationRoutes(server);
   registerRoomRoutes(server, liveKitTokenIssuer);
   registerRoomMcpRoutes(server);
+  registerLocalCodexRoutes(server);
   registerTaskRoutes(server);
+  server.register(async (bridgeRouteServer) => {
+    registerBridgeRoutes(bridgeRouteServer);
+  });
   server.register(async (eventRouteServer) => {
     registerRoomEventRoutes(eventRouteServer, {
       agentConnectors: options.agentConnectors,

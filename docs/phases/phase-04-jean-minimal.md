@@ -15,6 +15,8 @@ voix humaine -> transcript final -> detection d'une commande -> creation d'une t
 - Creation automatique d'un agent `Jean` en base si necessaire.
 - Creation d'une task et d'un artifact quand Jean comprend une commande.
 - Publication d'un event `agent.speech` pour afficher la reponse de Jean.
+- Lecture vocale optionnelle de cet event par le room-worker reel via Deepgram
+  TTS et une piste LiveKit `jean-voice`.
 - Runner local qui simule le travail de Jean avec logs et patch d'artifact.
 - Affichage de Jean, de ses messages et des tasks dans la room.
 
@@ -53,6 +55,8 @@ Ce decoupage est important parce que la comprehension de Jean pourra changer plu
 - `packages/jean-core/src/index.test.ts` : cas de test du parseur.
 - `apps/api/src/jean-flow.ts` : branchement transcript final -> Jean -> task/artifact.
 - `apps/api/src/jean-task-runner.ts` : runner local de Jean.
+- `apps/room-worker/src/jean-voice.ts` : sortie vocale courte a partir de
+  `agent.speech`.
 - `apps/web/src/components/room-shell.tsx` : panneau Jean, tasks et artifacts.
 - `apps/api/src/routes.test.ts` : test ou `Jean, cree une spec` cree une task.
 

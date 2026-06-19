@@ -313,16 +313,19 @@ export const roomMcpTools: McpToolDefinition[] = [
       ...nullableTextSchema("Optional artifact status."),
       enum: ["DRAFT", "GENERATING", "READY", "FAILED", "ARCHIVED"]
     },
+    runId: nullableTextSchema("Optional agent run identifier."),
     content: metadataSchema
   }, ["roomId", "artifactId", "content"]),
   tool("room.patch_artifact", "Patch Artifact", "Patch artifact content with a shallow merge.", {
     ...roomIdProperty,
     artifactId: textSchema("Artifact identifier."),
+    runId: nullableTextSchema("Optional agent run identifier."),
     patch: metadataSchema
   }, ["roomId", "artifactId", "patch"]),
   tool("room.set_preview_url", "Set Preview URL", "Attach a preview URL to an artifact.", {
     ...roomIdProperty,
     artifactId: textSchema("Artifact identifier."),
+    approvalId: nullableTextSchema("Approved publish_preview approval identifier."),
     previewUrl: { ...textSchema("Preview URL."), format: "uri" }
   }, ["roomId", "artifactId", "previewUrl"]),
   tool("room.complete_task", "Complete Task", "Mark a task as completed.", {
@@ -357,6 +360,7 @@ export const roomMcpTools: McpToolDefinition[] = [
     ...roomIdProperty,
     sessionId: textSchema("Sandbox session identifier."),
     artifactId: nullableTextSchema("Optional artifact identifier."),
+    approvalId: nullableTextSchema("Approved publish_preview approval identifier."),
     port: numberSchema("Server port.")
   }, ["roomId", "sessionId", "port"]),
   tool("preview.stop_session", "Stop Preview Session", "Stop a sandbox preview session.", {

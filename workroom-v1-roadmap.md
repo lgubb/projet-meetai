@@ -13,7 +13,7 @@
 
 ### V1 en une phrase
 
-Créer une room browser avec audio/vidéo, transcription Deepgram, Jean comme agent vocal sobre, onglets de tâches au centre, artefacts live, Perplexity pour la recherche, E2B pour les previews code, Lovable via MCP, Codex via bridge local/MCP, et un connecteur MCP générique.
+Créer une room browser avec audio/vidéo, transcription Deepgram, Jean comme orchestrateur visible, un room sandbox commun, des sandboxes personnels attachés aux users, des artefacts live, Perplexity pour la recherche, E2B pour les previews code, Lovable via MCP, Codex via bridge local/MCP, et un connecteur MCP générique.
 
 ### Ce que la V1 doit démontrer
 
@@ -34,9 +34,11 @@ Créer une room browser avec audio/vidéo, transcription Deepgram, Jean comme ag
 
 Un espace de travail synchrone avec :
 
-- une colonne de participants humains à gauche ;
-- un canvas central avec des onglets de tâches ;
-- Jean et les tâches/validations à droite ;
+- des tuiles participants avec leurs agents personnels visibles en badges ;
+- un room sandbox commun accessible en cliquant Jean ;
+- un user sandbox accessible en cliquant la tuile d'un participant ;
+- une scene centrale pour les artefacts partages et les previews publiees ;
+- une timeline/actions/validations lisible pendant le call ;
 - audio/vidéo LiveKit ;
 - transcription live Deepgram ;
 - agents externes branchables via MCP/API/bridge local ;
@@ -60,20 +62,131 @@ Ne pas perdre de temps avec :
 
 ## 2. Expérience utilisateur V1
 
+### Modèle UX validé : room stage + sandboxes personnels
+
+La room ne doit pas etre un clone de visio avec un chatbot ajoute. Le modele
+mental retenu est :
+
+```text
+Room Stage
+  Ce que tout le monde voit : artefact actif, preview partagee, decisions,
+  approvals, timeline commune.
+
+Jean / Room Sandbox
+  Espace commun de la room : notes live, actions proposees, agents de room,
+  contexte partage, historique des decisions.
+
+User Sandbox
+  Espace personnel d'un participant : ses agents, ses terminaux, ses brouillons,
+  ses credentials, ses tasks en cours.
+```
+
+Regle produit :
+
+```text
+Le travail peut se faire dans un user sandbox, mais les resultats importants
+sont promus vers le Room Stage quand ils doivent devenir visibles/actionnables
+par tous.
+```
+
+Exemples :
+
+- cliquer sur `Jean` ouvre le room sandbox ;
+- cliquer sur la camera de `Louis` ouvre le sandbox de Louis ;
+- les agents personnels de Louis sont affiches comme badges attaches a sa tuile ;
+- une preview generee par le Codex de Louis apparait d'abord dans son sandbox,
+  puis peut etre partagee dans le stage commun ;
+- les agents natifs de la room, comme recherche, notes, deck builder ou diagrammes,
+  vivent cote Jean/room sandbox plutot que sous un user.
+
+### Agents personnels vs agents de room
+
+Il faut eviter l'ambiguite "cet agent agit avec les droits de qui ?".
+
+```text
+Agents personnels
+  Attaches a une tuile user.
+  Utilisent les credentials, la machine, les connecteurs ou les permissions du user.
+  Exemples : Codex local, Claude Code, Gmail, WhatsApp, Linear perso.
+
+Agents de room
+  Attaches a Jean / room sandbox.
+  Utilisent les droits de la room, de l'organisation ou de Jean.
+  Exemples : note taker, recherche web, deck builder Jean, diagram builder.
+```
+
+UI recommandee :
+
+- afficher 1 a 3 badges agents maximum sur chaque tuile user ;
+- utiliser un compteur `+N` si le user a plus d'agents ;
+- rendre les statuts visibles sans bruit : `idle`, `working`, `approval needed`,
+  `blocked` ;
+- ouvrir le detail complet au clic sur la tuile user ;
+- dupliquer les actions importantes dans la timeline commune.
+
+### Jean : transcription permanente, action explicite
+
+Jean peut transcrire et structurer la reunion en continu, mais il ne doit pas
+declencher des actions arbitraires parce qu'il "pense avoir compris" une phrase
+dans un call a plusieurs personnes.
+
+La V1 utilise une autonomie progressive :
+
+```text
+Niveau 1 - manuel
+  Mention, bouton, commande ecrite, clic sur agent.
+
+Niveau 2 - suggestion
+  Jean detecte une action possible et propose une carte.
+
+Niveau 3 - preparation
+  Jean prepare un brouillon, une task ou une action, puis attend validation.
+
+Niveau 4 - execution autonome
+  Reserve aux actions faibles risques et aux habitudes tres claires.
+```
+
+Etats UX de Jean :
+
+```text
+Jean passif
+  Transcrit, resume, detecte des signaux faibles, n'execute rien.
+
+Jean arme / ecoute active
+  Declenche par clic sur le badge Jean, mention "Jean", ou commande ecrite.
+  Pendant une fenetre courte, Jean cherche une intention actionnable.
+
+Jean execution
+  Cree la task, route vers l'agent, stream logs/results, demande approval si besoin.
+```
+
+Regle V1 :
+
+```text
+Jean ecoute toujours pour transcript/resume, mais n'agit que quand il est
+explicitement appele : clic, mention "Jean", commande ecrite ou action UI.
+```
+
+Cette regle reduit les faux positifs, en particulier dans les calls a 10+
+personnes ou la transcription, les interruptions et les pronoms rendent
+l'orchestration autonome trop fragile.
+
 ### Écran principal
 
 ```text
 ┌──────────────────────────────────────────────────────────────────────────────┐
-│ Topbar : Jean Workroom | Room name | Share | Agents | Settings | Leave       │
-├───────────────┬──────────────────────────────────────────────┬───────────────┤
-│ Participants  │ Workspace central                            │ Jean / Tasks  │
-│               │                                              │               │
-│ Louis         │ Tabs: [Spec] [Research] [Prototype] [Diagram] │ Jean          │
-│ Alice         │                                              │ écoute        │
-│ Bob           │ Current tab: artifact renderer                │               │
-│               │ - doc / code / iframe / research / diagram   │ Tasks         │
-│ Jean          │ - logs streaming                             │ Approvals     │
-└───────────────┴──────────────────────────────────────────────┴───────────────┘
+│ Topbar : Jean Workroom | Room name | Share | Settings | Leave                │
+├──────────────────────────────────────────────────────────────────────────────┤
+│ Users rail : [Louis + agents] [Alice + agents] [Jean] [Bob + agents] [...]   │
+├──────────────────────────────────────────────────────────────────────────────┤
+│                                                                              │
+│                            Room Stage / Sandbox actif                        │
+│                                                                              │
+│         artifact actif | preview | terminal agent | doc | deck | diagram     │
+│                                                                              │
+├───────────────────────────────┬──────────────────────────────────────────────┤
+│ Agent/tool dock optionnel      │ Timeline : tasks, logs, approvals, decisions │
+└───────────────────────────────┴──────────────────────────────────────────────┘
 ```
 
 ### Exemple d'usage
@@ -834,6 +947,550 @@ npx jean-bridge login
 npx jean-bridge start
 ```
 
+Cette installation CLI/YAML reste acceptable pour le mode dev, mais ne doit pas
+etre l'experience produit V1. Pour une V1 propre, l'utilisateur doit passer par
+un flow UI "Connecter Codex local" qui masque la config technique et guide le
+pairing.
+
+### Connexion produit V1
+
+Objectif : transformer la config locale en parcours comprehensible.
+
+```text
+Room UI -> Connecter Codex local -> code temporaire -> jean-bridge local -> Codex CLI deja authentifie
+```
+
+Les trois pieces a separer clairement :
+
+- **MVP produit** : bouton et etats UI pour connecter Codex local sans demander
+  a l'utilisateur d'ecrire un YAML.
+- **Pairing securise** : la room genere un code temporaire ; le bridge l'utilise
+  pour obtenir un token limite a cette room, cet agent et cette session.
+- **Codex auth locale** : Codex reste authentifie par ses propres mecanismes
+  locaux (`codex login`, API key ou token Codex selon le contexte). Jean ne
+  stocke pas les credentials OpenAI de l'utilisateur.
+
+Critere V1 :
+
+```text
+Depuis la room, un humain peut connecter Codex local sans manipuler de YAML,
+voir "Codex Local" passer en connected, puis demander a Jean de lui deleguer
+une task code/prototype visible dans les tasks, logs, artifacts et events.
+```
+
+### Vue terminal pour agents CLI-first
+
+Codex, Claude Code et beaucoup d'agents de code sont utilises naturellement en
+terminal. La room peut donc proposer une vue terminal pour les agents locaux,
+mais ce n'est pas un `iframe` du Terminal natif de l'utilisateur.
+
+Modele technique cible :
+
+```text
+Room web
+  -> xterm.js
+  -> WebSocket room/bridge
+  -> jean-bridge local
+  -> process autorise : codex, claude, autre agent CLI declare
+```
+
+Regles produit/securite :
+
+- la vue terminal est rattachee au user sandbox du proprietaire de l'agent ;
+- la room ne lance jamais un shell libre par defaut ;
+- le bridge n'execute que les commandes declarees/localement autorisees ;
+- les tokens Jean restent room-scoped et temporaires ;
+- les credentials Codex/Claude/autres restent locaux ;
+- les actions R2/R3 restent soumises a approval ;
+- les events structures restent la source de verite pour tasks, logs, artifacts
+  et approvals.
+
+Positionnement :
+
+```text
+Le terminal est une vue familiere pour certains agents.
+Il ne remplace pas le contrat structure Room MCP / app-server / SDK.
+```
+
+### Cockpit Codex Local cible
+
+Le pairing et le dispatch prouvent que Codex peut recevoir une task. Ce n'est
+pas encore une experience produit suffisante. Le prochain jalon doit transformer
+un artifact code brut en cockpit lisible, proche de l'experience mentale de
+l'app Codex : une task claire, un run observable, des fichiers manipulables, une
+preview, des decisions, des erreurs comprehensibles et un historique rejouable.
+
+Objectif produit :
+
+```text
+Quand Jean delegue une task a Codex local, la room doit montrer non seulement
+le resultat, mais aussi comment Codex travaille, ce qu'il a lu, ce qu'il a
+produit, ce qui est pret a etre previewe, ce qui demande validation et ce qui a
+echoue.
+```
+
+Ce qu'on ne fait pas :
+
+- ne pas iframe l'app Codex officielle ;
+- ne pas exposer un shell libre dans le navigateur ;
+- ne pas pretendre remplacer toute l'interface Codex ;
+- ne pas pousser dans le repo local, GitHub ou un service externe sans approval.
+
+#### Surface UX
+
+Une task `CODE` ou `PREVIEW` deleguee a Codex ouvre une surface dediee :
+
+```text
+┌────────────────────────────────────────────────────────────────────────────┐
+│ Task header : objectif | proprietaire | agent | statut | cancel | share     │
+├───────────────────────┬───────────────────────────────────┬────────────────┤
+│ Run list / context     │ Files / editor / preview / diff   │ Timeline Codex │
+│ - run actif            │ - tree fichiers                   │ - plan         │
+│ - context pack         │ - tabs code                       │ - tool calls   │
+│ - inputs room          │ - preview index.html              │ - logs         │
+│ - approvals            │ - diff avant/apres                │ - errors       │
+└───────────────────────┴───────────────────────────────────┴────────────────┘
+```
+
+Regles de presentation :
+
+- le header doit dire explicitement `Codex Local de <user>` pour garder
+  l'ownership clair ;
+- le statut principal doit etre lisible sans ouvrir les logs :
+  `queued`, `connecting`, `planning`, `running`, `writing files`,
+  `waiting approval`, `preview ready`, `completed`, `failed`, `canceled`,
+  `disconnected` ;
+- la timeline commune de room reste concise ; le cockpit Codex contient les
+  logs detailles ;
+- les fichiers doivent etre dans une vraie arborescence, pas concatennes dans
+  un bloc texte ;
+- `index.html`, `README.md`, assets et fichiers generes doivent etre cliquables
+  individuellement ;
+- le premier fichier utile doit s'ouvrir automatiquement, avec heuristique :
+  `index.html` pour preview, puis `README.md`, puis le premier fichier source.
+
+#### Run Codex
+
+Le run est un objet produit, pas seulement une succession de logs.
+
+Donnees minimales :
+
+```text
+runId
+roomId
+taskId
+agentId
+ownerUserId
+objective
+status
+startedAt
+endedAt
+durationMs
+modelOrRuntime
+sandboxMode
+workspaceScope
+summary
+error
+```
+
+Etats de run :
+
+```text
+created
+queued
+bridge_connecting
+agent_registered
+context_sent
+planning
+running
+waiting_for_approval
+writing_files
+running_checks
+previewing
+completed
+failed
+canceled
+timed_out
+bridge_disconnected
+```
+
+Le run doit exposer deux niveaux d'information :
+
+- **timeline lisible** : etapes courtes, orientees utilisateur ;
+- **raw/debug** : logs, payloads, erreurs bridge/MCP, stderr filtre, tool calls.
+
+Exemples de timeline :
+
+```text
+15:57:08  Jean a delegue la task a Codex Local.
+15:57:08  Codex Local a pris la task.
+15:57:11  Codex a recu le contexte de room.
+15:57:18  Codex propose un plan en 3 etapes.
+15:57:42  Codex a cree index.html.
+15:57:43  Codex a cree README.md.
+15:57:46  Preview HTML disponible.
+15:57:49  Run termine.
+```
+
+#### Plan, raisonnement et progression
+
+Le cockpit doit afficher une section `Plan` separee des logs. Le but n'est pas
+d'exposer du chain-of-thought prive, mais une progression actionnable :
+
+- intention comprise ;
+- fichiers que Codex prevoit de produire ou modifier ;
+- checks prevus ;
+- risques detectes ;
+- prochaine action ;
+- blocage eventuel.
+
+Exemples :
+
+```text
+Plan
+1. Creer une page HTML autonome pour la pricing card.
+2. Ajouter CSS responsive et etats focus/hover.
+3. Ajouter README avec instructions de preview.
+```
+
+Quand Codex change de plan, l'UI doit montrer une nouvelle version de plan, pas
+ecraser silencieusement l'ancienne.
+
+#### File explorer et versions
+
+Les artifacts code doivent evoluer vers un modele fichier.
+
+Minimum V1 :
+
+- `artifact_files` : path, type, size, language, content hash, latest version ;
+- `artifact_file_versions` : contenu ou pointeur R2, createdAt, runId ;
+- `artifact_file_diffs` : oldVersionId, newVersionId, unified diff ;
+- tree virtuel par artifact ;
+- tabs de fichiers ;
+- recherche simple par path ;
+- bouton copy ;
+- bouton download artifact zip ;
+- bouton promote/share vers Room Stage.
+
+UX attendue :
+
+- tree a gauche : dossiers/fichiers, icones par type ;
+- editor read-only par defaut ;
+- mode diff pour chaque fichier modifie ;
+- badge `new`, `modified`, `deleted`, `generated`, `from context` ;
+- indication du run qui a produit chaque version ;
+- historique par fichier ;
+- fallback propre si un artifact ancien ne contient encore qu'un blob
+  `content.files`.
+
+Regle importante :
+
+```text
+La room affiche des artifacts versionnes. Le repo local de l'utilisateur n'est
+pas modifie automatiquement tant qu'un flow explicite "apply to local repo" ou
+"create PR" n'a pas ete valide.
+```
+
+#### Preview
+
+Un artifact qui contient `index.html` ne doit pas rester un bloc de code.
+
+Preview V1 :
+
+- bouton `Preview` visible dans le header de l'artifact ;
+- rendu sandbox iframe pour HTML statique ;
+- assets relatifs resolus depuis l'artifact ;
+- erreurs HTML/CSS affichees dans un panneau `Preview logs` ;
+- bouton refresh ;
+- bouton open in new tab si l'URL est sandboxee ;
+- selection desktop/mobile ;
+- snapshot screenshot optionnel pour la timeline.
+
+Preview V1.5 :
+
+- pour apps avec build step, envoyer les fichiers dans E2B ;
+- demarrer serveur preview en sandbox ;
+- stocker `previewUrl`, statut et logs ;
+- afficher `preview starting`, `preview ready`, `preview failed`.
+
+Contraintes :
+
+- pas d'execution JS non sandboxee dans la room ;
+- pas d'acces aux cookies/session Workroom depuis l'iframe ;
+- pas d'appel reseau externe silencieux sans policy explicite ;
+- si la preview est locale/E2B, afficher clairement son origine.
+
+#### Logs et events structures
+
+Les logs actuels sont trop pauvres. Il faut passer a des events structures,
+puis deriver les vues UI depuis ces events.
+
+Events cible :
+
+```ts
+type CodexRunEvent =
+  | { type: "codex.run.started"; runId: string; taskId: string; agentId: string }
+  | { type: "codex.run.status"; runId: string; status: CodexRunStatus }
+  | { type: "codex.plan.updated"; runId: string; plan: CodexPlanItem[] }
+  | { type: "codex.step.started"; runId: string; title: string }
+  | { type: "codex.step.completed"; runId: string; title: string; summary?: string }
+  | { type: "codex.tool.started"; runId: string; tool: string; label: string }
+  | { type: "codex.tool.completed"; runId: string; tool: string; label: string; ok: boolean }
+  | { type: "codex.file.created"; runId: string; path: string; fileId: string }
+  | { type: "codex.file.updated"; runId: string; path: string; fileId: string; diffId?: string }
+  | { type: "codex.file.deleted"; runId: string; path: string; fileId: string }
+  | { type: "codex.check.started"; runId: string; command: string }
+  | { type: "codex.check.completed"; runId: string; command: string; status: "passed" | "failed" }
+  | { type: "codex.preview.ready"; runId: string; previewUrl?: string; artifactId: string }
+  | { type: "codex.approval.requested"; runId: string; approvalId: string; action: string }
+  | { type: "codex.run.completed"; runId: string; summary: string }
+  | { type: "codex.run.failed"; runId: string; error: string; recoverable: boolean };
+```
+
+Chaque event doit avoir :
+
+```text
+id
+roomId
+taskId
+artifactId?
+runId
+agentId
+ownerUserId
+severity: info | warning | error
+visibility: room | owner | debug
+createdAt
+payload
+```
+
+Regles :
+
+- la timeline room ne montre que `visibility=room` ;
+- le cockpit Codex montre `room + owner` ;
+- `debug` est cache par defaut et activable ;
+- les secrets sont redactes avant persistence ;
+- les events sont rejouables apres refresh.
+
+#### Tool calls et commandes
+
+La vue doit expliquer ce que Codex fait sans exposer tout le bruit technique.
+
+Pour chaque tool call :
+
+- nom lisible : `Read context`, `Write index.html`, `Update artifact`,
+  `Run check`, `Create preview` ;
+- statut : pending/running/success/failed ;
+- duree ;
+- entree resumee ;
+- sortie resumee ;
+- details raw ouvrables ;
+- erreur actionable.
+
+Commandes locales :
+
+- les commandes executees par `jean-bridge` doivent etre declarees localement ;
+- la room affiche la commande logique, pas forcement toute la commande shell ;
+- stdout/stderr doivent etre tronques et filtrables ;
+- un run long doit pouvoir etre cancel ;
+- apres cancel, le processus enfant doit etre tue et l'UI doit montrer l'etat
+  final `canceled`.
+
+#### Approvals et securite
+
+Le cockpit Codex doit rendre les frontieres de securite visibles.
+
+Actions sans approval :
+
+- lire le contexte de room ;
+- creer un artifact dans la room ;
+- ecrire des fichiers virtuels dans l'artifact ;
+- generer une preview sandboxee ;
+- append logs.
+
+Actions avec approval :
+
+- appliquer des changements au repo local ;
+- lancer une commande locale non triviale ;
+- lire un chemin local hors workspace autorise ;
+- envoyer du code ou des fichiers a un service externe ;
+- creer branche/commit/PR ;
+- push Git ;
+- ouvrir une URL externe avec contexte sensible.
+
+Carte approval :
+
+```text
+Codex demande : appliquer 2 fichiers au repo local
+Fichiers : index.html, README.md
+Risque : medium
+Pourquoi : l'utilisateur a demande une preview exploitable localement
+Actions : Approve once | Reject | Edit scope | Always allow for this room
+```
+
+L'UI doit toujours dire ou l'action se passe :
+
+```text
+Room artifact only
+Local machine
+E2B sandbox
+GitHub
+External API
+```
+
+#### Connexion, sante et recovery
+
+Le statut `connected` doit etre precis. Une simple socket ouverte ne suffit pas.
+
+Etats agent :
+
+```text
+not_paired
+pairing_pending
+paired_not_running
+connecting
+registered
+heartbeat_ok
+busy
+stale
+disconnected
+auth_error
+bridge_error
+codex_error
+```
+
+UI agent :
+
+- afficher dernier heartbeat ;
+- afficher agentId/sessionId en debug ;
+- afficher version bridge et version Codex si disponibles ;
+- signaler `registered` separement de `connected socket` ;
+- bouton reconnect ;
+- bouton regenerate pairing ;
+- message clair si Codex CLI n'est pas authentifie localement ;
+- warning si plusieurs bridges se connectent pour le meme agent.
+
+Recovery run :
+
+- si bridge drop pendant un run, statut `bridge_disconnected` ;
+- si le bridge revient, le run doit etre marque `recoverable` ou `failed` ;
+- si le run est fini cote agent mais pas cote API, l'agent doit pouvoir renvoyer
+  un resume idempotent ;
+- le bouton `Retry` cree un nouveau run lie a la meme task.
+
+#### Collaboration room
+
+Codex est personnel, mais le resultat peut devenir collectif.
+
+Regles :
+
+- le run montre toujours son proprietaire : `Codex Local de Louis` ;
+- les autres participants peuvent voir le resultat partage, mais pas les logs
+  debug prives par defaut ;
+- un artifact peut rester dans le user sandbox avant promotion ;
+- une action `Promote to room stage` rend l'artifact central ;
+- les commentaires humains doivent pouvoir s'accrocher a un fichier, une ligne,
+  une preview ou un run step ;
+- une commande `Jean, demande a Codex de modifier ce fichier` doit inclure le
+  fichier actif comme contexte.
+
+#### Modes d'entree
+
+L'utilisateur doit pouvoir lancer Codex autrement qu'en injectant un transcript.
+
+Entrees V1 :
+
+- commande vocale ou transcript final : `Jean code build a pricing card` ;
+- commande ecrite dans la room ;
+- bouton `Ask Codex` sur un artifact code/prototype ;
+- bouton `Improve with Codex` depuis une preview ;
+- mention directe `@Codex` quand le user owner a un Codex local connecte ;
+- relance depuis un run existant : `Retry`, `Continue`, `Make responsive`,
+  `Add tests`, `Explain`.
+
+Composer Codex :
+
+- champ objectif ;
+- contexte selectionne : transcript, decisions, artifact actif, fichier actif ;
+- mode : `generate`, `edit`, `review`, `debug`, `prototype` ;
+- cible : `room artifact`, `user sandbox`, `local repo` ;
+- estimation de risque avant execution ;
+- bouton `Run`.
+
+#### Qualite UX attendue
+
+Problemes observes dans le smoke a corriger :
+
+- `index.htmlREADME.md` ne doit jamais apparaitre comme texte colle ;
+- les logs doivent expliquer clairement que Codex, et non le mock Jean, a pris
+  la task ;
+- le code long doit etre navigable, pas seulement affiche dans un grand bloc ;
+- le panneau Tasks ne doit pas devenir une liste interminable sans filtres ;
+- les anciennes tasks doivent etre groupables/archivees ;
+- le dernier run actif doit etre facile a retrouver ;
+- la preview doit etre le mode par defaut quand un fichier HTML principal existe ;
+- les messages d'erreur bridge doivent dire quoi faire ensuite.
+
+#### Decoupage de build
+
+Phase 9F1 - instrumentation run :
+
+- creer les schemas `agentRun`, `runStep`, `artifactFile`, `artifactFileVersion`,
+  `artifactFileDiff` si absents ;
+- persister les events Codex structures ;
+- ajouter `agent.start_run`, `agent.emit_event`, `agent.finish_run` au flow
+  bridge reel ;
+- emettre `file.created/updated`, `plan.updated`, `check.*`, `preview.*`.
+
+Phase 9F2 - cockpit UI :
+
+- detail task en layout 3 zones ;
+- timeline Codex filtree ;
+- statut agent/run precis ;
+- debug drawer pour raw events ;
+- cancel/retry.
+
+Phase 9F3 - fichiers :
+
+- file tree ;
+- tabs ;
+- viewer code ;
+- diff viewer ;
+- download zip ;
+- migration/fallback depuis `content.files`.
+
+Phase 9F4 - preview :
+
+- detection `index.html` ;
+- iframe sandbox ;
+- preview logs ;
+- desktop/mobile ;
+- `set_preview_url` pour sandbox E2B quand necessaire.
+
+Phase 9F5 - approvals et actions locales :
+
+- carte approval riche ;
+- apply to local repo ;
+- run checks ;
+- create branch/commit/PR plus tard ;
+- redaction secrets et audit.
+
+Phase 9F6 - polish collaboration :
+
+- promote to room stage ;
+- comments sur fichier/ligne/run step ;
+- filtres tasks/runs ;
+- ownership multi-user ;
+- empty/error states propres.
+
+Critere de reussite :
+
+```text
+Un utilisateur connecte Codex local, demande une pricing card, voit Codex prendre
+la task, suit le plan et les steps, ouvre index.html dans une preview, inspecte
+les fichiers generes, comprend les erreurs s'il y en a, et peut partager le
+resultat dans la room sans ouvrir le terminal local.
+```
+
 ### Config locale
 
 ```yaml
@@ -1195,6 +1852,7 @@ Livrables :
 - room-worker ;
 - subscription aux audio tracks ;
 - Deepgram STT ;
+- Deepgram TTS pour voix courte de Jean ;
 - segments transcript partiels/finals ;
 - affichage transcript debug ;
 - stockage Postgres.
@@ -1204,6 +1862,15 @@ Critère :
 ```text
 La room affiche et stocke les paroles des participants avec speaker attribution.
 ```
+
+Statut repo au 2026-06-19 :
+
+- Le room-worker ecoute les pistes audio LiveKit et publie les transcripts via
+  l'API interne.
+- Jean voice livree : le worker ecoute les events `agent.speech` via WebSocket
+  room authentifie par `WORKROOM_WORKER_TOKEN`, appelle Deepgram TTS en
+  `linear16`, publie une piste LiveKit `jean-voice`, throttle les phrases et
+  garde le fallback texte-only si la synthese ou la publication echoue.
 
 ---
 
@@ -1223,6 +1890,12 @@ Critère :
 ```text
 Dire "Jean, crée une spec" crée une tâche et un onglet.
 ```
+
+Statut repo au 2026-06-19 :
+
+- `agent.speech` est persiste/rejoue comme event room.
+- Les confirmations vocales courtes sont maintenant branchees cote
+  room-worker reel via Deepgram TTS et LiveKit.
 
 ---
 
@@ -1368,11 +2041,144 @@ Critère :
 Depuis une room, Jean peut déléguer une tâche à Codex local via le bridge.
 ```
 
-Statut repo au 2026-06-17 :
+Statut repo au 2026-06-18 :
 
-- Non demarree.
-- Precondition Phase 8 atteinte : le contrat MCP HTTP/auth/persistence est prouve avant de brancher Codex.
-- Prochaine etape recommandee : connecter un premier agent local via `jean-bridge`, sans ajouter Lovable/v0/Claude en meme temps.
+- Phase 9A/9B/9C/9D implementees : `jean-bridge` a maintenant `login`, `start`, `agents list`, config YAML locale, stockage local `state.json` mode `0600`, WebSocket sortant `/rooms/:roomId/bridge`, heartbeat/reconnect, broker API, dispatch task Jean -> bridge, cancellation, et adaptateurs locaux `mock` + `mcp_stdio`.
+- Le bridge ne recoit jamais de commande shell depuis le cloud : il execute uniquement `command` + `args` declares dans `~/.jean-bridge/config.yaml`.
+- Le bridge garde la room comme source de verite : il recoit la delegation en WebSocket mais ecrit logs/artifacts via le Room MCP HTTP persiste de Phase 8.
+- Codex est branche via `codex mcp-server` en stdio MCP JSONL, avec support configurable `jsonl`/`content_length`, tool `codex`, timeout, kill process sur cancel, et publication du resultat comme artifact `READY`.
+- Phase 9E posee : flow UI `Connecter Codex local`, code de pairing temporaire persiste en hash, commande bridge locale, verification auth Codex locale, etats UI de connexion et session agent room-scoped.
+- Tests ajoutes : flow API bridge mock complet Jean -> bridge -> Room MCP -> artifact, cancellation in-flight, config/state bridge.
+- Smoke Codex local verifie : `codex mcp-server` expose `codex,codex-reply`, et un appel read-only au tool `codex` retourne un JSON minimal.
+- Packaging tarball alpha livre : `@jean/shared` et `@jean/bridge-cli` sont packables publiquement, `jean-bridge` expose son binaire, les tests compiles sont exclus du tarball CLI, et `pnpm pack` transforme la dependance `workspace:*` en `@jean/shared@0.1.0`.
+- Smoke package hors monorepo livre : `pnpm bridge:smoke:package` packe
+  `@jean/shared` et `@jean/bridge-cli`, installe les tarballs dans un projet
+  temporaire hors workspace, verifie `jean-bridge help`, l'import
+  `@jean/shared`, l'exclusion des tests compiles et l'absence de dependance
+  `workspace:*`. Le smoke lance aussi un `jean-bridge doctor`, un pairing et
+  un `jean-bridge start` packagés contre un serveur Workroom mock, avec faux
+  binaire Codex MCP local, pour verifier preflight machine, WebSocket bridge,
+  execution agent locale et publication d'artifact via Room MCP hors monorepo.
+- Reste terrain/produit : publication registry, vraie URL API publique et smoke
+  complet UI + bridge + vrai Codex authentifie sur machine utilisateur hors
+  monorepo.
+
+Sous-phases produit a finaliser avant d'ouvrir la V1 :
+
+#### Phase 9E - Connexion produit Codex local
+
+Objectif :
+
+```text
+Remplacer l'onboarding YAML par un parcours UI "Connecter Codex local".
+```
+
+Livrables :
+
+- action UI `Connecter Codex local` depuis le panneau Agents ;
+- generation d'un code de pairing temporaire cote room ;
+- commande ou deeplink bridge qui consomme ce code ;
+- creation d'une session agent room-scoped sans exposer de token long-lived ;
+- verification locale que `codex` est installe et authentifie ;
+- etats UI clairs : `non connecte`, `pairing en attente`, `connecte`, `erreur Codex auth`, `erreur bridge` ;
+- aucun stockage de credentials OpenAI dans Jean ;
+- rappel produit clair : Jean autorise le bridge dans la room, Codex garde son auth locale.
+
+Critere :
+
+```text
+Un utilisateur peut connecter Codex Local depuis une room sans ecrire de YAML,
+voir l'agent connecte dans l'UI, lancer une delegation Jean -> Codex, puis voir
+les logs/artifacts/events revenir par le Room MCP HTTP.
+```
+
+Note produit :
+
+```text
+Le pairing Jean et l'auth Codex sont deux sujets differents.
+Pairing Jean = cette machine peut travailler dans cette room.
+Auth Codex locale = Codex peut utiliser le compte OpenAI/ChatGPT local de l'utilisateur.
+```
+
+#### Phase 9F - UX cockpit agentique : room sandbox, user sandboxes, Jean action mode
+
+Objectif :
+
+```text
+Transformer la room en cockpit agentique lisible avant de multiplier les
+connecteurs externes.
+```
+
+Livrables :
+
+- rail de participants avec badges d'agents personnels rattaches aux users ;
+- separation visuelle entre agents personnels et agents de room ;
+- clic sur `Jean` -> room sandbox commun ;
+- clic sur une tuile user -> user sandbox personnel ;
+- scene centrale pour l'artefact actif, les previews partagees et les outputs promus ;
+- timeline commune : decisions, actions proposees, tasks, logs, approvals, erreurs ;
+- etats Jean : `passif`, `ecoute active`, `execution`, `approval needed`, `blocked` ;
+- declenchement explicite par clic badge Jean, mention "Jean", commande ecrite ou bouton ;
+- cartes d'action proposee avec `Confirmer`, `Modifier`, `Annuler` ;
+- promotion d'un resultat depuis un user sandbox vers le room stage ;
+- vue terminal optionnelle pour agents CLI-first, rattachee au user sandbox ;
+- instrumentation des faux positifs/faux negatifs de detection d'action.
+
+Critere :
+
+```text
+Dans une room avec plusieurs participants, chacun voit clairement quels agents
+appartiennent a quel user, peut ouvrir le sandbox d'un user ou le room sandbox
+de Jean, armer Jean pour une action, confirmer/modifier/annuler la task proposee,
+puis voir le resultat revenir dans la timeline et le stage commun.
+```
+
+Statut repo au 2026-06-18 :
+
+- Cockpit UI partiellement livre : badges agents personnels, room/user sandboxes,
+  Jean action mode, timeline, approvals, retry/continue/cancel et promotion vers
+  le Room Stage.
+- Runs et fichiers persistants livres : `AgentRun`, `AgentRunEvent`,
+  `ArtifactFile`, versions, diffs, tools MCP `agent.*`, route fichiers et rendu
+  front avec fallback `content.files`, download ZIP et diff viewer.
+- Filtres tasks livres dans le cockpit.
+- Cartes approval enrichies livrees cote UI : scope, payload, horodatage et
+  decision.
+- Apply-to-local-repo livre via bridge local : approval humaine obligatoire,
+  dispatch `bridge.local_action.run`, ecriture bornee au `cwd` du bridge et
+  audit `LOCAL_ACTION_*`.
+- Run checks livre via bridge local : approval humaine obligatoire, dispatch
+  `bridge.local_action.run`, execution uniquement des checks declares localement
+  et audit `LOCAL_ACTION_*`.
+- Comments persistants livres pour fichier/ligne/run step, avec UI branchee sur
+  les vrais `AgentRunEvent`.
+- Previews sandboxees livrees cote contrat MCP HTTP : `SandboxSession`,
+  `preview.create_session`, `preview.write_files`, `preview.start_server`,
+  `preview.publish_url`, `preview.stop_session`.
+- Ownership multi-user livre pour la V1 : owner signe dans les tokens agent,
+  persiste sur `AgentRun` / `AgentRunEvent` et rendu par le cockpit Codex meme
+  si l'etat live de l'agent est incomplet.
+- Empty/error states du cockpit livres, avec messages actionnables pour Codex
+  local, bridge, tasks, approvals, timeline et sandboxes.
+- Phase 9F livree pour le perimetre V1. Reste hors Phase 9 : connecteurs
+  Lovable/v0/Claude, transport SSE si necessaire et Phase 11 permissions/tool
+  calls detailles.
+
+Hors scope :
+
+- orchestration full-auto sur tout le transcript ;
+- iframe de l'app Codex officielle ;
+- shell libre expose au navigateur ;
+- marketplace publique d'agents ;
+- autonomie R2/R3 sans approval humaine.
+
+Raison produit :
+
+```text
+La valeur vient de l'instantaneite pendant le call, pas d'une magie autonome
+fragile. Jean doit assister et proposer avant d'executer, surtout dans les calls
+a 10+ personnes ou la transcription et les intentions sont ambigues.
+```
 
 ---
 
@@ -1392,10 +2198,32 @@ Critère :
 Jean peut demander à Lovable de générer un prototype et l'afficher en room.
 ```
 
-Statut repo au 2026-06-17 :
+Statut repo au 2026-06-18 :
 
-- Non demarree.
-- A garder apres Phase 9, pour eviter de debugguer plusieurs connecteurs externes avant d'avoir prouve le bridge local.
+- Phase 10A bridge-first livree.
+- `AgentProvider` persiste maintenant `CLAUDE_CODE`, `LOVABLE`, `V0` et
+  `CUSTOM`.
+- `jean-bridge` accepte ces providers dans sa config locale avec defaults de
+  nom/capacites adaptes.
+- Jean route les tasks `prototype` vers `LOVABLE`, `V0`, `CODEX`,
+  `CLAUDE_CODE`, `MCP`, `CUSTOM` selon les agents bridge connectes.
+- Jean route les tasks `code` vers `CODEX`, `CLAUDE_CODE`, `V0`, `LOVABLE`,
+  `MCP`, `CUSTOM`.
+- Test prouve : une demande de preview est deleguee a un agent Lovable connecte
+  via bridge, l'artifact revient dans la room, et la task termine.
+- Phase 10B alpha livree : connecteur Remote MCP generique env-gated via
+  `WORKROOM_REMOTE_MCP_URL`, bearer optionnel, tool configurable
+  `WORKROOM_REMOTE_MCP_TOOL_NAME`, task types limites par
+  `WORKROOM_REMOTE_MCP_TASK_TYPES`, appel JSON-RPC `tools/call` et application
+  du `structuredContent.patch` comme patch d'artifact. Test unitaire prouve le
+  routage, le bearer, le tool configure, le patch et la preview URL.
+- Phase 10C alpha v0 livree : connecteur v0 API env-gated via `V0_API_KEY`,
+  base URL/modele/task types configurables, creation de chat `POST /v1/chats`,
+  application des fichiers/metadonnees retournes comme patch d'artifact et
+  publication de preview URL quand v0 en retourne une. Test unitaire prouve le
+  routage, le bearer, le modele configure, le patch et la preview URL.
+- Reste Phase 10D si besoin : OAuth Lovable gere directement par Workroom,
+  packaging Claude Code/plugin et connecteurs cloud dedies plus profonds.
 
 ---
 
@@ -1416,10 +2244,45 @@ Critère :
 Aucune action externe sensible n'est exécutée sans validation humaine.
 ```
 
-Statut repo au 2026-06-17 :
+Statut repo au 2026-06-18 :
 
-- Une base existe deja via Phase 8D/8E : approvals persistantes, UI minimale, decisions humaines, audit logs agents/approvals et protection anti-usurpation agent.
-- Reste a faire pour une Phase 11 complete : risk policy centralisee, permissions fines org/user/agent, historique tool calls plus detaille, regles R2/R3 appliquees partout, tests de non-regression sur actions sensibles.
+- Une base existe via Phase 8D/8E et le durcissement Phase 9F : approvals persistantes, UI decisions humaines, audit logs agents/approvals, protection anti-usurpation agent, Policy Guard centralise pour publication preview et audit `AGENT_TOOL_CALL_BLOCKED`.
+- Phase 11A livree : table `AgentToolCall`, enregistrement de chaque `tools/call`
+  MCP HTTP avec args nettoyes, resultat, erreur, status `SUCCEEDED` / `FAILED`
+  / `BLOCKED`, duree, et route `GET /rooms/:roomId/tool-calls`.
+- Phase 11B livree : la room affiche un panneau `Tool calls` dedie avec filtres
+  par status, refresh, polling leger et inspection des args/resultats nettoyes.
+- Phase 11C livree : les decisions d'approval sont reservees aux org `OWNER` /
+  `ADMIN` ou room `HOST`; un `MEMBER` peut lire l'approval mais ne peut pas
+  l'approuver ou la rejeter.
+- Phase 11D livree : `GET /rooms/:roomId/policy` et panneau read-only `Policy`
+  affichent le droit courant de decision d'approval et les actions sensibles
+  connues.
+- Phase 11E livree : la route humaine
+  `PATCH /rooms/:roomId/artifacts/:artifactId/preview-url` est couverte par
+  l'action sensible `publish_preview`; sans approval elle cree une demande
+  `PENDING` et ne publie qu'apres decision humaine approuvee.
+- Phase 11F livree : la creation de sessions agent
+  `POST /rooms/:roomId/agent-sessions` est reservee aux org `OWNER` / `ADMIN`
+  ou room `HOST`, et ce droit est visible dans la policy room.
+- Phase 11G livree : les owners peuvent administrer les membres
+  d'organisation via API et dashboard (`GET /members`, `PATCH /members/:userId`
+  pour roles `ADMIN` / `MEMBER`), avec protection du dernier `OWNER`.
+- Phase 11H livree : les org `OWNER` / `ADMIN` peuvent durcir les regles
+  policy sensibles connues via `PATCH /rooms/:roomId/policy/rules/:ruleId` ;
+  les overrides sont persistants par organisation, visibles dans le panneau
+  `Policy`, et utilises par les tools MCP comme par les routes humaines. Les
+  approvals restent obligatoires et une regle ne peut pas etre abaissee sous
+  son niveau de risque de base.
+- Les tools preview/artifact sensibles verifient les capacites de l'agent :
+  `PROTOTYPING`, `CODE_GENERATION`, `RESEARCH` ou `ARTIFACT_GENERATION` selon
+  le type d'action.
+- Tests prouves : `agent.start_run` est trace en succes, `room.set_preview_url`
+  sans approval est trace en `BLOCKED`, un agent sans `PROTOTYPING` ne peut pas
+  creer une preview, la route HTTP preview ne publie pas sans approval, et
+  un membre ne peut pas creer une session agent ni modifier les roles org.
+- Reste Phase 11 : couvrir les prochaines actions sensibles R2/R3 au moment ou
+  elles sont ajoutees au produit.
 
 ---
 
@@ -1427,12 +2290,32 @@ Statut repo au 2026-06-17 :
 
 Livrables :
 
-- onboarding simple ;
-- 3 templates de room : Product Jam, Research Call, Prototype Session ;
-- métriques usage ;
-- limites/coûts ;
-- billing manuel ou waitlist ;
-- documentation d'installation bridge.
+- onboarding simple (Phase 12B livree : panneau dashboard `Alpha setup`
+  profile / organisation / template / premiere room) ;
+- 3 templates de room : Product Jam, Research Call, Prototype Session
+  (Phase 12A livree : choix au dashboard, `templateId` API, starter
+  task/artifact persiste pour chaque template non blank) ;
+- métriques usage (Phase 12C livree : route organisation `usage` et panneau
+  dashboard `Usage` avec compteurs rooms/tasks/artifacts/agents/approvals/tool
+  calls) ;
+- limites/coûts (Phase 12D livree pour les limites : seuils
+  `WORKROOM_ALPHA_MAX_*`, `usage.limits`, rendu `used/limit` dans le dashboard ;
+  Phase 12G livree pour les couts reels alpha : saisie manuelle facture/export
+  via `ProviderCostEntry`, API `provider-costs`, panneau `Provider costs` ;
+  Phase 12H livree pour la conversion multi-devise : taux FX manuels
+  `ProviderExchangeRate`, API `provider-exchange-rates`, `convertedSummary` et
+  total converti dans le dashboard ;
+  Phase 12I livree pour la recuperation FX externe a la demande : Frankfurter
+  v2 filtre `providers=ECB`, route `provider-exchange-rates/fetch`,
+  persistance `ProviderExchangeRate` et action dashboard `Fetch ECB rate` ;
+  Phase 12J livree pour les unites fournisseur internes automatiques :
+  `usage.providerUsage` expose minutes LiveKit participants fermees, minutes
+  Deepgram STT, minutes E2B sandbox et failures connecteurs sans prix invente) ;
+- billing manuel ou waitlist (Phase 12E livree : waitlist billing persistante
+  par organisation, API `billing-waitlist`, panneau dashboard) ;
+- documentation d'installation bridge (Phase 12F livree :
+  `docs/bridge-installation.md`, lien README, pairing, YAML fallback,
+  securite et troubleshooting).
 
 Critère :
 
@@ -1460,9 +2343,10 @@ Ordre strict :
 11. Room MCP Server
 12. jean-bridge
 13. Codex local
-14. Lovable MCP
-15. Policy approvals/audit
-16. Alpha hardening
+14. UX cockpit agentique : room sandbox, user sandboxes, Jean action mode
+15. Lovable MCP
+16. Policy approvals/audit
+17. Alpha hardening
 ```
 
 Ne pas commencer par Codex/Lovable avant d'avoir `Task + Artifact + Event bus`, sinon les outputs n'auront nulle part où vivre.
@@ -1960,6 +2844,134 @@ Acceptance criteria:
 - A room task can call local Codex MCP through the bridge and receive output in a CODE artifact.
 ```
 
+### Prompt 16B — UX cockpit agentique
+
+```text
+Implement the first agentic cockpit UX for Jean Workroom.
+
+Scope:
+- Update the room layout so participant tiles can show compact personal agent badges.
+- Add a Room Sandbox view opened by clicking Jean.
+- Add a User Sandbox view opened by clicking a participant tile.
+- Distinguish personal agents from room agents in the UI.
+- Add Jean action modes: passive, listening, proposing, executing, approval_needed, blocked.
+- Add an explicit "arm Jean" interaction by clicking Jean or using a written/voice mention.
+- When Jean detects an action while armed, show an action proposal card with Confirm, Edit, Cancel.
+- Keep the central stage for shared artifacts, previews and promoted outputs.
+- Add a timeline lane for actions, decisions, logs, approvals and errors.
+- Add a placeholder terminal panel for CLI-first local agents, but do not wire a raw shell.
+
+Constraints:
+- Do not implement full autonomous orchestration.
+- Do not iframe the official Codex app.
+- Do not expose a free shell in the browser.
+- R2/R3 actions must still require approval.
+- Keep ownership clear: every personal agent must visibly belong to a user.
+
+Acceptance criteria:
+- In a room with multiple users, the UI makes it clear which agents belong to each user.
+- Clicking Jean opens the room sandbox.
+- Clicking a user opens that user's sandbox.
+- Arming Jean and submitting a command creates a proposal card before execution.
+- A result can be promoted from a user sandbox to the shared room stage.
+```
+
+### Prompt 16C — Cockpit Codex Local complet
+
+```text
+Implement the Codex Local cockpit UX for code/prototype tasks.
+
+Goal:
+Make a delegated Codex run understandable and usable from the room, without
+opening the terminal or reading a raw CODE artifact blob.
+
+Scope:
+- Add a dedicated Codex run view for CODE/PREVIEW tasks.
+- Show run ownership: "Codex Local de <user>".
+- Show precise agent health: not paired, pairing pending, registered,
+  heartbeat ok, busy, stale, disconnected, auth error, bridge error.
+- Persist and render structured run steps:
+  - delegated
+  - claimed
+  - context sent
+  - plan updated
+  - tool started/completed
+  - file created/updated/deleted
+  - check started/completed
+  - preview ready/failed
+  - completed/failed/canceled
+- Add a readable timeline plus a collapsible raw/debug log drawer.
+- Add a file explorer for code artifacts:
+  - tree by path
+  - file tabs
+  - language-aware code viewer
+  - support current content.files fallback
+  - avoid concatenating file names like index.htmlREADME.md
+- Add artifact file versioning hooks:
+  - file id
+  - path
+  - latest version
+  - produced by run id
+  - diff id optional
+- Add a preview experience:
+  - detect index.html
+  - render static HTML in a sandbox iframe
+  - show preview logs/errors
+  - desktop/mobile toggle
+  - refresh
+- Add run controls:
+  - cancel
+  - retry
+  - continue from current artifact
+  - promote to room stage
+- Add composer entry points:
+  - Ask Codex from a code artifact
+  - Improve with Codex from a preview
+  - direct @Codex mention when the owner has Codex connected
+- Keep room timeline concise while the Codex cockpit contains detailed steps.
+
+Backend/API:
+- Introduce or extend persisted models for agent runs, run steps, artifact files,
+  file versions and diffs.
+- Extend Room MCP / bridge tools so Codex can emit structured events, not only
+  append plain logs.
+- Keep events replayable after refresh.
+- Redact secrets before persistence.
+- Add idempotency for run completion and file writes.
+- Mark bridge disconnects explicitly and support retry.
+
+Security:
+- Do not expose a raw shell in the browser.
+- Do not iframe the official Codex app.
+- Do not apply files to the local repo without approval.
+- Do not run arbitrary cloud-provided commands locally.
+- Keep all local credentials on the user's machine.
+- Make execution location visible: room artifact, local machine, E2B sandbox,
+  GitHub or external API.
+
+UI constraints:
+- Match the existing room visual language.
+- Avoid nested cards and marketing-style layouts.
+- Keep the central stage focused on the active artifact.
+- The file tree, code viewer, timeline and preview must fit on desktop and
+  degrade cleanly on narrower screens.
+- Long code must scroll inside the code pane, not stretch the full page.
+
+Acceptance criteria:
+- A user can connect Codex Local and see "registered/heartbeat ok", not just
+  "socket connected".
+- When Jean delegates a CODE task, the room shows "Delegated to Codex Local"
+  and "Codex Local claimed the task".
+- The generated index.html and README.md appear as two separate files.
+- Clicking index.html opens a sandboxed preview.
+- The same task can show timeline, files, preview and raw debug logs.
+- If the bridge disconnects mid-run, the run becomes bridge_disconnected and
+  exposes Retry.
+- Refreshing the room preserves the run timeline and files.
+- Tests cover event parsing, artifact file rendering, replay and a bridge
+  delegated CODE task.
+```
+
 ### Prompt 17 — Policy Guard + approvals
 
 ```text
@@ -2089,6 +3101,9 @@ Patch the most critical issues and add TODOs for follow-up hardening.
 ```text
 - command detection false positives
 - command detection false negatives
+- action proposal confirmation rate
+- action proposal cancel/edit rate
+- actions triggered by click vs mention vs written command
 - transcript latency
 - Jean response latency
 - time to first artifact update
@@ -2142,6 +3157,13 @@ Jean, prépare une PR.
 ### Risque 1 — UX trop confuse
 
 Mitigation : commandes explicites uniquement en V1, task cards claires, statuts visibles.
+
+### Risque 1B — Jean déclenche les mauvais agents
+
+Mitigation : Jean transcrit toujours mais n'agit que sur intention explicite
+(`Jean`, clic badge, commande ecrite, bouton). En V1, il propose et prepare
+avant d'executer. Mesurer faux positifs, faux negatifs et taux d'annulation des
+cartes d'action.
 
 ### Risque 2 — Coûts audio trop élevés
 

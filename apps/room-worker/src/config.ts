@@ -16,6 +16,13 @@ export type RoomWorkerConfig = {
     sampleRate: number;
     endpointing: number;
   };
+  jeanVoice: {
+    enabled: boolean;
+    model: string;
+    sampleRate: number;
+    minIntervalMs: number;
+    trackName: string;
+  };
 };
 
 export function readRoomWorkerConfig(env: NodeJS.ProcessEnv = process.env): RoomWorkerConfig {
@@ -36,6 +43,13 @@ export function readRoomWorkerConfig(env: NodeJS.ProcessEnv = process.env): Room
       language: env.DEEPGRAM_LANGUAGE?.trim() || "multi",
       sampleRate: Number(env.DEEPGRAM_SAMPLE_RATE ?? 16000),
       endpointing: Number(env.DEEPGRAM_ENDPOINTING ?? 100)
+    },
+    jeanVoice: {
+      enabled: readBooleanEnv(env, "WORKROOM_JEAN_VOICE_ENABLED", true),
+      model: env.DEEPGRAM_TTS_MODEL?.trim() || "aura-2-thalia-en",
+      sampleRate: Number(env.DEEPGRAM_TTS_SAMPLE_RATE ?? 16000),
+      minIntervalMs: Number(env.WORKROOM_JEAN_VOICE_MIN_INTERVAL_MS ?? 2500),
+      trackName: env.WORKROOM_JEAN_VOICE_TRACK_NAME?.trim() || "jean-voice"
     }
   };
 }
@@ -48,4 +62,22 @@ function readRequiredEnv(env: NodeJS.ProcessEnv, name: string): string {
   }
 
   return value;
+}
+
+function readBooleanEnv(env: NodeJS.ProcessEnv, name: string, defaultValue: boolean): boolean {
+  const value = env[name]?.trim().toLowerCase();
+
+  if (!value) {
+    return defaultValue;
+  }
+
+  if (["1", "true", "yes", "on"].includes(value)) {
+    return true;
+  }
+
+  if (["0", "false", "no", "off"].includes(value)) {
+    return false;
+  }
+
+  throw new Error(`${name} must be a boolean value.`);
 }

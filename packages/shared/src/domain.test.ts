@@ -10,6 +10,7 @@ import {
   realtimeRoomEventSchema,
   roomAgentSchema,
   roomEventSchema,
+  roomTemplateIdSchema,
   sandboxSessionSchema,
   taskStatusSchema,
   userRoleSchema
@@ -18,12 +19,14 @@ import {
 test("domain enum schemas accept known values", () => {
   assert.equal(userRoleSchema.parse("OWNER"), "OWNER");
   assert.equal(agentCapabilitySchema.parse("ORCHESTRATION"), "ORCHESTRATION");
+  assert.equal(roomTemplateIdSchema.parse("product_jam"), "product_jam");
   assert.equal(taskStatusSchema.parse("WAITING_FOR_APPROVAL"), "WAITING_FOR_APPROVAL");
   assert.equal(artifactStatusSchema.parse("READY"), "READY");
 });
 
 test("domain enum schemas reject unknown values", () => {
   assert.throws(() => userRoleSchema.parse("SUPER_ADMIN"));
+  assert.throws(() => roomTemplateIdSchema.parse("workshop"));
   assert.throws(() => taskStatusSchema.parse("DONE"));
 });
 
@@ -276,6 +279,7 @@ test("phase 8 room-agent contract schemas validate strict envelopes", () => {
     id: "run-1",
     roomId: "room-1",
     agentId: agent.id,
+    ownerUserId: "user-1",
     taskId: "task-1",
     status: "RUNNING",
     startedAt: "2026-06-16T10:00:00.000Z",

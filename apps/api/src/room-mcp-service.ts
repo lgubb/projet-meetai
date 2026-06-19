@@ -7,20 +7,25 @@ import {
   roomMcpResourceTemplates,
   roomMcpTools,
   type McpPromptResult,
+  type PreviewFile,
   type McpResource,
   type McpResourceReadResult,
   type McpToolDefinition,
   type McpToolResult
 } from "@jean/mcp";
 import {
+  agentRunSchema,
   approvalRequestSchema,
   contextPackSchema,
   realtimeRoomEventSchema,
   roomAgentSchema,
   roomEventSchema,
   roomParticipantSummarySchema,
+  sandboxSessionSchema,
   roomTranscriptSegmentSchema,
   type AgentCapability,
+  type AgentRun,
+  type AgentRunStatus,
   type AgentTransport,
   type ApprovalRequest,
   type ApprovalStatus,
@@ -28,16 +33,20 @@ import {
   type ArtifactType,
   type ContextPack,
   type RealtimeArtifact,
+  type RealtimeRoomEvent,
   type RoomAgent,
   type RoomEvent,
   type RoomEventType,
   type RoomParticipantSummary,
   type RoomTranscriptSegment,
+  type SandboxProvider,
+  type SandboxSession,
   type TaskRiskLevel,
   type TaskStatus
 } from "@jean/shared";
 
 import { HttpError, notFound } from "./errors.js";
+import { classifyRoomMcpToolPolicyForRoom, isPolicyApprovalSatisfied, type RoomMcpPolicy } from "./policy-guard.js";
 import type { RoomAgentTokenClaims } from "./room-agent-auth.js";
 import {
   appendTaskLog,
@@ -57,6 +66,7 @@ export type CreateRoomAgentSessionInput = {
   provider: PersistedAgentProvider;
   transport: AgentTransport;
   capabilities: AgentCapability[];
+  endpoint?: string | null;
   metadata?: Record<string, unknown>;
 };
 
@@ -111,6 +121,15 @@ type AgentParticipantRecord = {
   agent?: AgentRecord | null;
 };
 
+type LocalAgentPairingRecord = {
+  id: string;
+  roomId: string;
+  createdByUserId: string;
+  agentId: string | null;
+  status: string;
+  createdAt: Date;
+};
+
 type ApprovalRecord = {
   id: string;
   roomId: string;
@@ -139,6 +158,70 @@ type AuditLogRecord = {
   createdAt: Date;
 };
 
+type AgentToolCallRecord = {
+  id: string;
+  roomId: string;
+  taskId: string | null;
+  artifactId: string | null;
+  approvalId: string | null;
+  agentId: string;
+  toolName: string;
+  status: "RUNNING" | "SUCCEEDED" | "FAILED" | "BLOCKED";
+  arguments: unknown | null;
+  result: unknown | null;
+  errorCode: number | null;
+  errorMessage: string | null;
+  startedAt: Date;
+  finishedAt: Date | null;
+  durationMs: number | null;
+  createdAt: Date;
+  updatedAt: Date;
+};
+
+type AgentRunRecord = {
+  id: string;
+  roomId: string;
+  taskId: string | null;
+  agentId: string;
+  ownerUserId: string | null;
+  status: string;
+  startedAt: Date;
+  finishedAt: Date | null;
+  summary: string | null;
+  metadata: unknown | null;
+  createdAt: Date;
+  updatedAt: Date;
+};
+
+type AgentRunEventRecord = {
+  id: string;
+  roomId: string;
+  taskId: string | null;
+  artifactId: string | null;
+  runId: string;
+  agentId: string;
+  ownerUserId: string | null;
+  type: string;
+  severity: string;
+  visibility: string;
+  payload: unknown | null;
+  createdAt: Date;
+};
+
+type SandboxSessionRecord = {
+  id: string;
+  roomId: string;
+  taskId: string | null;
+  createdByAgentId: string | null;
+  provider: string;
+  status: string;
+  workdir: string;
+  previewUrl: string | null;
+  metadata: unknown | null;
+  createdAt: Date;
+  updatedAt: Date;
+};
+
 type TaskEventRecord = {
   id: string;
   roomId: string;
@@ -159,7 +242,7 @@ type TranscriptSegmentRecord = {
   createdAt: Date;
 };
 
-type PersistedAgentProvider = "NATIVE" | "MCP" | "CODEX" | "LOVABLE" | "PERPLEXITY" | "E2B";
+type PersistedAgentProvider = "NATIVE" | "MCP" | "CODEX" | "CLAUDE_CODE" | "LOVABLE" | "V0" | "PERPLEXITY" | "E2B" | "CUSTOM";
 
 const supportedToolNames = new Set([
   "room.get_context_pack",
@@ -183,11 +266,18 @@ const supportedToolNames = new Set([
   "room.set_preview_url",
   "room.complete_task",
   "room.fail_task",
+  "preview.create_session",
+  "preview.write_files",
+  "preview.start_server",
+  "preview.publish_url",
+  "preview.stop_session",
   "agent.register",
   "agent.heartbeat",
   "agent.list",
   "agent.claim_task",
+  "agent.start_run",
   "agent.emit_event",
+  "agent.finish_run",
   "approval.request",
   "approval.get_status",
   "room.request_user_input",
@@ -222,7 +312,7 @@ export async function createRoomAgentSession(
     data: {
       agentId: agent.id,
       transport: input.transport,
-      endpoint: "room-mcp-http"
+      endpoint: input.endpoint ?? (input.transport === "HTTP" ? "room-mcp-http" : "jean-bridge")
     }
   })) as AgentConnectionRecord;
   const participant = (await server.db.roomParticipant.upsert({
@@ -328,6 +418,44 @@ export async function listRoomAgents(server: FastifyInstance, roomId: string): P
       joinedAt: "asc"
     }
   })) as AgentParticipantRecord[];
+  const agentIds = participants.map((participant) => participant.agentId).filter(isPresent);
+  const connections = (await server.db.agentConnection.findMany({
+    where: {
+      agentId: {
+        in: agentIds
+      }
+    },
+    orderBy: {
+      createdAt: "desc"
+    }
+  })) as AgentConnectionRecord[];
+  const latestConnectionByAgentId = new Map<string, AgentConnectionRecord>();
+
+  for (const connection of connections) {
+    if (!latestConnectionByAgentId.has(connection.agentId)) {
+      latestConnectionByAgentId.set(connection.agentId, connection);
+    }
+  }
+
+  const localPairings = (await server.db.localAgentPairingCode.findMany({
+    where: {
+      roomId,
+      agentId: {
+        in: agentIds
+      }
+    },
+    orderBy: {
+      createdAt: "desc"
+    }
+  })) as LocalAgentPairingRecord[];
+  const latestLocalPairingByAgentId = new Map<string, LocalAgentPairingRecord>();
+
+  for (const pairing of localPairings) {
+    if (pairing.agentId && !latestLocalPairingByAgentId.has(pairing.agentId)) {
+      latestLocalPairingByAgentId.set(pairing.agentId, pairing);
+    }
+  }
+
   const heartbeatEvents = await listRoomAuditEvents(server, roomId, "AGENT_HEARTBEAT");
   const lastHeartbeatByAgentId = new Map<string, string>();
 
@@ -341,9 +469,17 @@ export async function listRoomAgents(server: FastifyInstance, roomId: string): P
     .filter((participant) => participant.agent)
     .map((participant) => {
       const agent = participant.agent as AgentRecord;
+      const transport = latestConnectionByAgentId.get(agent.id)?.transport ?? "HTTP";
+      const localPairing = latestLocalPairingByAgentId.get(agent.id);
 
-      return serializeRoomAgent(roomId, agent, participant, "HTTP", {
-        lastHeartbeatAt: lastHeartbeatByAgentId.get(agent.id) ?? null
+      return serializeRoomAgent(roomId, agent, participant, transport as AgentTransport, {
+        lastHeartbeatAt: lastHeartbeatByAgentId.get(agent.id) ?? null,
+        ...(localPairing
+          ? {
+              localPairingId: localPairing.id,
+              pairedByUserId: localPairing.createdByUserId
+            }
+          : {})
       });
     });
 }
@@ -367,6 +503,89 @@ export async function listRoomApprovals(server: FastifyInstance, roomId: string)
   }
 
   return approvals.map((approval) => serializeApproval(approval, requestPayloadByApprovalId.get(approval.id)));
+}
+
+export type RoomToolCall = {
+  id: string;
+  roomId: string;
+  taskId: string | null;
+  artifactId: string | null;
+  approvalId: string | null;
+  agentId: string;
+  toolName: string;
+  status: AgentToolCallRecord["status"];
+  arguments: Record<string, unknown>;
+  result: Record<string, unknown> | null;
+  errorCode: number | null;
+  errorMessage: string | null;
+  startedAt: string;
+  finishedAt: string | null;
+  durationMs: number | null;
+};
+
+export async function listRoomToolCalls(server: FastifyInstance, roomId: string): Promise<RoomToolCall[]> {
+  const toolCalls = (await server.db.agentToolCall.findMany({
+    where: {
+      roomId
+    },
+    orderBy: {
+      startedAt: "desc"
+    },
+    take: 100
+  })) as AgentToolCallRecord[];
+
+  return toolCalls.map(serializeAgentToolCall);
+}
+
+export async function createRoomApproval(
+  server: FastifyInstance,
+  input: {
+    roomId: string;
+    taskId?: string | null;
+    artifactId?: string | null;
+    requestedByAgentId?: string | null;
+    requestedByUserId?: string | null;
+    action: string;
+    reason: string;
+    riskLevel: TaskRiskLevel;
+    payload?: Record<string, unknown>;
+  }
+): Promise<{ approval: ApprovalRequest; event: RoomEvent }> {
+  const approval = (await server.db.approval.create({
+    data: {
+      roomId: input.roomId,
+      taskId: input.taskId ?? null,
+      artifactId: input.artifactId ?? null,
+      requestedByAgentId: input.requestedByAgentId ?? null,
+      title: input.action,
+      status: "PENDING",
+      riskLevel: input.riskLevel
+    }
+  })) as ApprovalRecord;
+  const serializedApproval = serializeApproval(approval, {
+    action: input.action,
+    reason: input.reason,
+    payload: input.payload ?? {}
+  });
+  const event = await recordRoomEvent(server, {
+    type: "APPROVAL_REQUESTED",
+    roomId: input.roomId,
+    actorAgentId: input.requestedByAgentId ?? null,
+    actorUserId: input.requestedByUserId ?? null,
+    taskId: input.taskId ?? null,
+    artifactId: input.artifactId ?? null,
+    approvalId: approval.id,
+    payload: {
+      approval: serializedApproval
+    }
+  });
+
+  publishRoomEvent(server, event);
+
+  return {
+    approval: serializedApproval,
+    event
+  };
 }
 
 export async function resolveRoomApproval(
@@ -460,7 +679,9 @@ async function dispatchJsonRpc(
         throw new RoomMcpHttpError(-32601, `Unsupported HTTP MCP tool: ${name}`);
       }
 
-      return callTool(server, claims, name, assertOptionalRecord(params.arguments, "params.arguments") ?? {});
+      const args = assertOptionalRecord(params.arguments, "params.arguments") ?? {};
+
+      return recordMcpToolCall(server, claims, name, args, () => callTool(server, claims, name, args));
     }
     case "resources/list":
       return {
@@ -499,6 +720,8 @@ async function callTool(
   args: Record<string, unknown>
 ): Promise<McpToolResult> {
   const roomId = requireClaimRoom(claims, args);
+
+  await enforceRoomMcpToolPolicy(server, claims, roomId, name, args);
 
   switch (name) {
     case "room.get_context_pack":
@@ -664,7 +887,8 @@ async function callTool(
         artifactId: requiredString(args.artifactId),
         title: optionalString(args.title) ?? undefined,
         status: (optionalString(args.status) as ArtifactStatus | null) ?? undefined,
-        content: requiredRecord(args.content, "content")
+        content: requiredRecord(args.content, "content"),
+        runId: optionalString(args.runId)
       });
 
       if (!result) {
@@ -680,7 +904,8 @@ async function callTool(
       const result = await patchArtifact(server, {
         roomId,
         artifactId: requiredString(args.artifactId),
-        patch: requiredRecord(args.patch, "patch")
+        patch: requiredRecord(args.patch, "patch"),
+        runId: optionalString(args.runId)
       });
 
       if (!result) {
@@ -751,6 +976,60 @@ async function callTool(
 
       return toolResult(result);
     }
+    case "preview.create_session": {
+      const result = await createPreviewSession(server, claims, args);
+
+      publishRoomEvent(server, result.event);
+
+      return toolResult(result);
+    }
+    case "preview.write_files": {
+      const result = await writePreviewFiles(server, roomId, requiredString(args.sessionId), requiredPreviewFiles(args.files));
+
+      publishRoomEvent(server, result.event);
+
+      return toolResult(result);
+    }
+    case "preview.start_server": {
+      const result = await startPreviewServer(
+        server,
+        roomId,
+        requiredString(args.sessionId),
+        requiredString(args.command),
+        requiredNumber(args.port)
+      );
+
+      publishRoomEvent(server, result.event);
+
+      return toolResult(result);
+    }
+    case "preview.publish_url": {
+      const result = await publishPreviewUrl(
+        server,
+        roomId,
+        requiredString(args.sessionId),
+        requiredNumber(args.port),
+        optionalString(args.artifactId)
+      );
+
+      publishRoomEvent(server, result.event);
+      if (result.artifactEvent) {
+        server.roomEvents.publish(result.artifactEvent);
+      }
+
+      return toolResult({
+        session: result.session,
+        event: result.event,
+        ...(result.artifact ? { artifact: result.artifact } : {})
+      });
+    }
+    case "preview.stop_session": {
+      const result = await stopPreviewSession(server, roomId, requiredString(args.sessionId));
+
+      publishRoomEvent(server, result.event);
+
+      return toolResult(result);
+    }
     case "agent.register":
     case "agent.heartbeat": {
       const agentId = requireClaimAgent(claims, args);
@@ -772,8 +1051,61 @@ async function callTool(
       return toolResult({
         agents: await listRoomAgents(server, roomId)
       });
+    case "agent.start_run": {
+      const agentId = requireClaimAgent(claims, args);
+      const agent = await findRoomAgent(server, roomId, agentId);
+      const run = (await server.db.agentRun.create({
+        data: {
+          roomId,
+          taskId: optionalString(args.taskId),
+          agentId,
+          ownerUserId: claims.ownerUserId ?? getAgentOwnerUserId(agent),
+          status: "RUNNING",
+          metadata: (optionalRecord(args.metadata) ?? {}) as Prisma.InputJsonValue
+        }
+      })) as AgentRunRecord;
+      const { event, runEvent } = await recordAgentRunEvent(server, {
+        roomEventType: "AGENT_RUN_STARTED",
+        run,
+        type: "agent.run.started",
+        payload: {
+          message: "Agent run started."
+        }
+      });
+
+      publishRoomEvent(server, event);
+
+      return toolResult({ run: serializeAgentRun(run), runEvent, event });
+    }
     case "agent.emit_event": {
       const agentId = requireClaimAgent(claims, args);
+      const runId = optionalString(args.runId);
+      const run = runId ? await findAgentRun(server, roomId, runId, agentId) : null;
+
+      if (runId && !run) {
+        throw new RoomMcpHttpError(-32602, "Agent run not found.");
+      }
+
+      if (run) {
+        const { event, runEvent } = await recordAgentRunEvent(server, {
+          roomEventType: "AGENT_RUN_EVENT",
+          run,
+          type: optionalString(args.type) ?? "agent.event",
+          taskId: optionalString(args.taskId) ?? run.taskId,
+          artifactId: optionalString(args.artifactId),
+          severity: optionalString(args.severity) ?? "info",
+          visibility: optionalString(args.visibility) ?? "room",
+          payload: {
+            message: requiredString(args.message),
+            ...(optionalRecord(args.payload) ?? {})
+          }
+        });
+
+        publishRoomEvent(server, event);
+
+        return toolResult({ runEvent, event });
+      }
+
       const event = await recordRoomEvent(server, {
         type: "AGENT_RUN_EVENT",
         roomId,
@@ -788,6 +1120,36 @@ async function callTool(
       publishRoomEvent(server, event);
 
       return toolResult({ event });
+    }
+    case "agent.finish_run": {
+      const run = await findAgentRun(server, roomId, requiredString(args.runId), claims.agentId);
+
+      if (!run) {
+        throw new RoomMcpHttpError(-32602, "Agent run not found.");
+      }
+
+      const updatedRun = (await server.db.agentRun.update({
+        where: {
+          id: run.id
+        },
+        data: {
+          status: requiredRunStatus(args.status),
+          finishedAt: new Date(),
+          summary: optionalString(args.summary)
+        }
+      })) as AgentRunRecord;
+      const { event, runEvent } = await recordAgentRunEvent(server, {
+        roomEventType: "AGENT_RUN_FINISHED",
+        run: updatedRun,
+        type: runEventTypeForFinishedStatus(updatedRun.status),
+        payload: {
+          message: optionalString(args.summary) ?? `Agent run ${updatedRun.status.toLowerCase()}.`
+        }
+      });
+
+      publishRoomEvent(server, event);
+
+      return toolResult({ run: serializeAgentRun(updatedRun), runEvent, event });
     }
     case "approval.request":
       return toolResult(await requestApproval(server, claims, args));
@@ -833,6 +1195,66 @@ async function callTool(
   }
 }
 
+async function recordMcpToolCall(
+  server: FastifyInstance,
+  claims: RoomAgentTokenClaims,
+  toolName: string,
+  args: Record<string, unknown>,
+  operation: () => Promise<McpToolResult>
+): Promise<McpToolResult> {
+  const startedAt = new Date();
+  const toolCall = (await server.db.agentToolCall.create({
+    data: {
+      roomId: claims.roomId,
+      taskId: getString(args, "taskId"),
+      artifactId: getString(args, "artifactId"),
+      approvalId: getString(args, "approvalId"),
+      agentId: claims.agentId,
+      toolName,
+      status: "RUNNING",
+      arguments: sanitizeRecord(args) as Prisma.InputJsonValue
+    }
+  })) as AgentToolCallRecord;
+
+  try {
+    const result = await operation();
+    const finishedAt = new Date();
+
+    await server.db.agentToolCall.update({
+      where: {
+        id: toolCall.id
+      },
+      data: {
+        status: "SUCCEEDED",
+        result: summarizeToolResult(result) as Prisma.InputJsonValue,
+        finishedAt,
+        durationMs: finishedAt.getTime() - startedAt.getTime()
+      }
+    });
+
+    return result;
+  } catch (error) {
+    const finishedAt = new Date();
+    const mcpError =
+      error instanceof RoomMcpHttpError ? error : new RoomMcpHttpError(-32603, errorMessage(error));
+
+    await server.db.agentToolCall.update({
+      where: {
+        id: toolCall.id
+      },
+      data: {
+        status: mcpError.code === -32010 ? "BLOCKED" : "FAILED",
+        errorCode: mcpError.code,
+        errorMessage: mcpError.message,
+        finishedAt,
+        durationMs: finishedAt.getTime() - startedAt.getTime()
+      }
+    });
+
+    throw error;
+  }
+}
+
 async function requestApproval(
   server: FastifyInstance,
   claims: RoomAgentTokenClaims,
@@ -855,38 +1277,347 @@ async function requestApproval(
     }
   }
 
-  const approval = (await server.db.approval.create({
-    data: {
-      roomId,
-      taskId,
-      artifactId,
-      requestedByAgentId: agentId,
-      title: requiredString(args.action),
-      status: "PENDING",
-      riskLevel: requiredString(args.riskLevel) as TaskRiskLevel
-    }
-  })) as ApprovalRecord;
-  const serializedApproval = serializeApproval(approval, {
-    action: requiredString(args.action),
-    reason: requiredString(args.reason),
-    payload: optionalRecord(args.payload) ?? {}
-  });
-  const event = await recordRoomEvent(server, {
-    type: "APPROVAL_REQUESTED",
+  const { approval, event } = await createRoomApproval(server, {
     roomId,
-    actorAgentId: agentId,
     taskId,
     artifactId,
-    approvalId: approval.id,
+    requestedByAgentId: agentId,
+    action: requiredString(args.action),
+    reason: requiredString(args.reason),
+    riskLevel: requiredString(args.riskLevel) as TaskRiskLevel,
+    payload: optionalRecord(args.payload) ?? {}
+  });
+
+  return {
+    approval,
+    event
+  };
+}
+
+async function enforceRoomMcpToolPolicy(
+  server: FastifyInstance,
+  claims: RoomAgentTokenClaims,
+  roomId: string,
+  toolName: string,
+  args: Record<string, unknown>
+): Promise<void> {
+  const requiredCapability = await requiredAgentCapabilityForMcpTool(server, roomId, toolName, args);
+
+  if (requiredCapability) {
+    const agent = await findRoomAgent(server, roomId, claims.agentId);
+
+    if (!agent.capabilities.includes(requiredCapability) && !agent.capabilities.includes("ORCHESTRATION")) {
+      throw new RoomMcpHttpError(-32011, `${toolName} requires agent capability ${requiredCapability}.`);
+    }
+  }
+
+  const policy = await classifyRoomMcpToolPolicyForRoom(server.db, roomId, toolName, args);
+
+  if (!policy.requiresApproval) {
+    return;
+  }
+
+  if (!policy.approvalId) {
+    await recordBlockedMcpToolCall(server, claims, roomId, policy, "missing_approval");
+    throw new RoomMcpHttpError(
+      -32010,
+      `${toolName} requires an approved ${policy.action} approval before execution.`
+    );
+  }
+
+  const approval = (await listRoomApprovals(server, roomId)).find((candidate) => candidate.id === policy.approvalId);
+
+  if (!approval || !isPolicyApprovalSatisfied(policy, approval)) {
+    await recordBlockedMcpToolCall(server, claims, roomId, policy, "approval_not_satisfied");
+    throw new RoomMcpHttpError(-32010, `${toolName} approval is missing, rejected, pending, or out of scope.`);
+  }
+}
+
+async function requiredAgentCapabilityForMcpTool(
+  server: FastifyInstance,
+  roomId: string,
+  toolName: string,
+  args: Record<string, unknown>
+): Promise<AgentCapability | null> {
+  if (toolName.startsWith("preview.") || toolName === "room.set_preview_url") {
+    return "PROTOTYPING";
+  }
+
+  if (toolName === "room.create_artifact") {
+    return capabilityForArtifactType(getString(args, "type"));
+  }
+
+  if (toolName === "room.write_artifact" || toolName === "room.patch_artifact") {
+    const artifactId = getString(args, "artifactId");
+
+    if (!artifactId) {
+      return null;
+    }
+
+    const artifact = (await server.db.artifact.findFirst({
+      where: {
+        id: artifactId,
+        roomId
+      }
+    })) as { type: string } | null;
+
+    return capabilityForArtifactType(artifact?.type ?? null);
+  }
+
+  return null;
+}
+
+function capabilityForArtifactType(artifactType: string | null): AgentCapability | null {
+  if (artifactType === "CODE") {
+    return "CODE_GENERATION";
+  }
+
+  if (artifactType === "PREVIEW") {
+    return "PROTOTYPING";
+  }
+
+  if (artifactType === "RESEARCH") {
+    return "RESEARCH";
+  }
+
+  if (artifactType === "DOCUMENT" || artifactType === "DIAGRAM" || artifactType === "LOG") {
+    return "ARTIFACT_GENERATION";
+  }
+
+  return null;
+}
+
+async function recordBlockedMcpToolCall(
+  server: FastifyInstance,
+  claims: RoomAgentTokenClaims,
+  roomId: string,
+  policy: RoomMcpPolicy,
+  reason: string
+): Promise<void> {
+  const event = await recordRoomEvent(server, {
+    type: "AGENT_TOOL_CALL_BLOCKED",
+    roomId,
+    actorAgentId: claims.agentId,
+    taskId: policy.taskId,
+    artifactId: policy.artifactId,
     payload: {
-      approval: serializedApproval
+      action: policy.action,
+      approvalId: policy.approvalId,
+      reason,
+      requiredRiskLevel: policy.riskLevel,
+      toolName: policy.toolName
     }
   });
 
   publishRoomEvent(server, event);
+}
+
+async function createPreviewSession(
+  server: FastifyInstance,
+  claims: RoomAgentTokenClaims,
+  args: Record<string, unknown>
+): Promise<{ session: SandboxSession; event: RoomEvent }> {
+  const roomId = requireClaimRoom(claims, args);
+  const agentId = requireClaimAgent(claims, args);
+  const taskId = optionalString(args.taskId);
+  const provider = requiredSandboxProvider(optionalString(args.provider) ?? "LOCAL_MOCK");
+  const workdir = optionalString(args.workdir) ?? "/tmp/workroom-preview";
+
+  if (taskId) {
+    await requireTaskInRoom(server, roomId, taskId);
+  }
+
+  const session = (await server.db.sandboxSession.create({
+    data: {
+      roomId,
+      taskId,
+      createdByAgentId: agentId,
+      provider,
+      status: "CREATED",
+      workdir,
+      previewUrl: null,
+      metadata: {
+        providerSessionId: null
+      }
+    }
+  })) as SandboxSessionRecord;
+  const serializedSession = serializeSandboxSession(session);
+  const event = await recordRoomEvent(server, {
+    type: "SANDBOX_SESSION_CREATED",
+    roomId,
+    actorAgentId: agentId,
+    taskId,
+    payload: {
+      session: serializedSession
+    }
+  });
 
   return {
-    approval: serializedApproval,
+    session: serializedSession,
+    event
+  };
+}
+
+async function writePreviewFiles(
+  server: FastifyInstance,
+  roomId: string,
+  sessionId: string,
+  files: PreviewFile[]
+): Promise<{ session: SandboxSession; event: RoomEvent }> {
+  const session = await findSandboxSession(server, roomId, sessionId);
+  const metadata = {
+    ...normalizeRecord(session.metadata),
+    files
+  };
+  const updatedSession = (await server.db.sandboxSession.update({
+    where: {
+      id: session.id
+    },
+    data: {
+      metadata: metadata as Prisma.InputJsonValue
+    }
+  })) as SandboxSessionRecord;
+  const serializedSession = serializeSandboxSession(updatedSession);
+  const event = await recordRoomEvent(server, {
+    type: "SANDBOX_FILES_WRITTEN",
+    roomId,
+    actorAgentId: session.createdByAgentId,
+    taskId: session.taskId,
+    payload: {
+      session: serializedSession,
+      files
+    }
+  });
+
+  return {
+    session: serializedSession,
+    event
+  };
+}
+
+async function startPreviewServer(
+  server: FastifyInstance,
+  roomId: string,
+  sessionId: string,
+  command: string,
+  port: number
+): Promise<{ session: SandboxSession; event: RoomEvent }> {
+  const session = await findSandboxSession(server, roomId, sessionId);
+  const metadata = {
+    ...normalizeRecord(session.metadata),
+    command,
+    port
+  };
+  const updatedSession = (await server.db.sandboxSession.update({
+    where: {
+      id: session.id
+    },
+    data: {
+      status: "RUNNING",
+      metadata: metadata as Prisma.InputJsonValue
+    }
+  })) as SandboxSessionRecord;
+  const serializedSession = serializeSandboxSession(updatedSession);
+  const event = await recordRoomEvent(server, {
+    type: "SANDBOX_SERVER_STARTED",
+    roomId,
+    actorAgentId: session.createdByAgentId,
+    taskId: session.taskId,
+    payload: {
+      session: serializedSession,
+      command,
+      port
+    }
+  });
+
+  return {
+    session: serializedSession,
+    event
+  };
+}
+
+async function publishPreviewUrl(
+  server: FastifyInstance,
+  roomId: string,
+  sessionId: string,
+  port: number,
+  artifactId: string | null
+): Promise<{
+  artifact?: RealtimeArtifact;
+  artifactEvent?: RealtimeRoomEvent;
+  event: RoomEvent;
+  session: SandboxSession;
+}> {
+  const session = await findSandboxSession(server, roomId, sessionId);
+  const previewUrl = buildMockPreviewUrl(session.id, port);
+  const metadata = {
+    ...normalizeRecord(session.metadata),
+    port
+  };
+  const updatedSession = (await server.db.sandboxSession.update({
+    where: {
+      id: session.id
+    },
+    data: {
+      status: "READY",
+      previewUrl,
+      metadata: metadata as Prisma.InputJsonValue
+    }
+  })) as SandboxSessionRecord;
+  const serializedSession = serializeSandboxSession(updatedSession);
+  const event = await recordRoomEvent(server, {
+    type: "SANDBOX_PREVIEW_PUBLISHED",
+    roomId,
+    actorAgentId: session.createdByAgentId,
+    taskId: session.taskId,
+    artifactId,
+    payload: {
+      session: serializedSession,
+      previewUrl
+    }
+  });
+  const preview = artifactId
+    ? await updateArtifactPreviewUrl(server, {
+        roomId,
+        artifactId,
+        previewUrl
+      })
+    : null;
+
+  return {
+    session: serializedSession,
+    event,
+    ...(preview ? { artifact: preview.artifact, artifactEvent: preview.event } : {})
+  };
+}
+
+async function stopPreviewSession(
+  server: FastifyInstance,
+  roomId: string,
+  sessionId: string
+): Promise<{ session: SandboxSession; event: RoomEvent }> {
+  const session = await findSandboxSession(server, roomId, sessionId);
+  const updatedSession = (await server.db.sandboxSession.update({
+    where: {
+      id: session.id
+    },
+    data: {
+      status: "STOPPED"
+    }
+  })) as SandboxSessionRecord;
+  const serializedSession = serializeSandboxSession(updatedSession);
+  const event = await recordRoomEvent(server, {
+    type: "SANDBOX_SESSION_STOPPED",
+    roomId,
+    actorAgentId: session.createdByAgentId,
+    taskId: session.taskId,
+    payload: {
+      session: serializedSession
+    }
+  });
+
+  return {
+    session: serializedSession,
     event
   };
 }
@@ -913,7 +1644,7 @@ async function getRoomState(server: FastifyInstance, roomId: string): Promise<Re
     agents: await listRoomAgents(server, roomId),
     approvals: await listRoomApprovals(server, roomId),
     agentRuns: [],
-    sandboxSessions: []
+    sandboxSessions: await listSandboxSessions(server, roomId)
   });
 }
 
@@ -1160,7 +1891,7 @@ async function listRoomAuditEvents(
   return events.map(auditLogToRoomEvent).filter(isPresent);
 }
 
-async function recordRoomEvent(
+export async function recordRoomEvent(
   server: FastifyInstance,
   input: {
     type: RoomEventType;
@@ -1201,7 +1932,7 @@ async function recordRoomEvent(
   return event;
 }
 
-function publishRoomEvent(server: FastifyInstance, event: RoomEvent): void {
+export function publishRoomEvent(server: FastifyInstance, event: RoomEvent): void {
   server.roomEvents.publish(
     realtimeRoomEventSchema.parse({
       type: "room.event",
@@ -1272,6 +2003,130 @@ function auditLogToRoomEvent(auditLog: AuditLogRecord): RoomEvent | null {
   }
 }
 
+async function findAgentRun(
+  server: FastifyInstance,
+  roomId: string,
+  runId: string,
+  agentId: string
+): Promise<AgentRunRecord | null> {
+  return server.db.agentRun.findFirst({
+    where: {
+      id: runId,
+      roomId,
+      agentId
+    }
+  }) as Promise<AgentRunRecord | null>;
+}
+
+async function recordAgentRunEvent(
+  server: FastifyInstance,
+  input: {
+    roomEventType: RoomEventType;
+    run: AgentRunRecord;
+    type: string;
+    taskId?: string | null;
+    artifactId?: string | null;
+    severity?: string | null;
+    visibility?: string | null;
+    payload: Record<string, unknown>;
+  }
+): Promise<{ runEvent: Record<string, unknown>; event: RoomEvent }> {
+  const taskId = input.taskId ?? input.run.taskId;
+  const runEventPayload = sanitizeRecord({
+    runId: input.run.id,
+    run: serializeAgentRun(input.run),
+    ...input.payload
+  });
+  const runEvent = (await server.db.agentRunEvent.create({
+    data: {
+      roomId: input.run.roomId,
+      taskId,
+      artifactId: input.artifactId ?? null,
+      runId: input.run.id,
+      agentId: input.run.agentId,
+      ownerUserId: input.run.ownerUserId,
+      type: input.type,
+      severity: input.severity ?? "info",
+      visibility: input.visibility ?? "room",
+      payload: runEventPayload as Prisma.InputJsonValue
+    }
+  })) as AgentRunEventRecord;
+  const serializedRunEvent = serializeAgentRunEvent(runEvent);
+  const event = await recordRoomEvent(server, {
+    type: input.roomEventType,
+    roomId: input.run.roomId,
+    actorAgentId: input.run.agentId,
+    taskId,
+    artifactId: input.artifactId ?? null,
+    payload: {
+      runId: input.run.id,
+      run: serializeAgentRun(input.run),
+      runEvent: serializedRunEvent,
+      eventType: input.type,
+      ...runEventPayload
+    }
+  });
+
+  return {
+    runEvent: serializedRunEvent,
+    event
+  };
+}
+
+function serializeAgentRun(run: AgentRunRecord): AgentRun {
+  return agentRunSchema.parse({
+    id: run.id,
+    roomId: run.roomId,
+    agentId: run.agentId,
+    ownerUserId: run.ownerUserId,
+    taskId: run.taskId,
+    status: run.status,
+    startedAt: run.startedAt.toISOString(),
+    finishedAt: run.finishedAt?.toISOString() ?? null,
+    summary: run.summary,
+    metadata: sanitizeRecord(normalizeRecord(run.metadata))
+  });
+}
+
+function serializeAgentRunEvent(event: AgentRunEventRecord): Record<string, unknown> {
+  return {
+    id: event.id,
+    roomId: event.roomId,
+    taskId: event.taskId,
+    artifactId: event.artifactId,
+    runId: event.runId,
+    agentId: event.agentId,
+    ownerUserId: event.ownerUserId,
+    type: event.type,
+    severity: event.severity,
+    visibility: event.visibility,
+    payload: sanitizeRecord(normalizeRecord(event.payload)),
+    createdAt: event.createdAt.toISOString()
+  };
+}
+
+function requiredRunStatus(value: unknown): AgentRunStatus {
+  const status = requiredString(value);
+
+  if (status !== "COMPLETED" && status !== "FAILED" && status !== "CANCELED") {
+    throw new RoomMcpHttpError(-32602, "Final run status must be COMPLETED, FAILED, or CANCELED.");
+  }
+
+  return status;
+}
+
+function runEventTypeForFinishedStatus(status: string): string {
+  if (status === "FAILED") {
+    return "agent.run.failed";
+  }
+
+  if (status === "CANCELED") {
+    return "agent.run.canceled";
+  }
+
+  return "agent.run.completed";
+}
+
 async function findRoomAgent(server: FastifyInstance, roomId: string, agentId: string): Promise<RoomAgent> {
   const participants = await listRoomAgents(server, roomId);
   const agent = participants.find((candidate) => candidate.id === agentId);
@@ -1307,6 +2162,67 @@ async function findApprovalRequestPayload(
   return events.find((event) => event.approvalId === approvalId)?.payload;
 }
 
+async function listSandboxSessions(server: FastifyInstance, roomId: string): Promise<SandboxSession[]> {
+  const sessions = (await server.db.sandboxSession.findMany({
+    where: {
+      roomId
+    },
+    orderBy: {
+      createdAt: "asc"
+    }
+  })) as SandboxSessionRecord[];
+
+  return sessions.map(serializeSandboxSession);
+}
+
+async function findSandboxSession(
+  server: FastifyInstance,
+  roomId: string,
+  sessionId: string
+): Promise<SandboxSessionRecord> {
+  const session = (await server.db.sandboxSession.findFirst({
+    where: {
+      id: sessionId,
+      roomId
+    }
+  })) as SandboxSessionRecord | null;
+
+  if (!session) {
+    throw new RoomMcpHttpError(-32602, "Sandbox session not found.");
+  }
+
+  return session;
+}
+
+async function requireTaskInRoom(server: FastifyInstance, roomId: string, taskId: string): Promise<void> {
+  const task = await server.db.task.findFirst({
+    where: {
+      id: taskId,
+      roomId
+    }
+  });
+
+  if (!task) {
+    throw new RoomMcpHttpError(-32602, "Task not found.");
+  }
+}
+
+function serializeSandboxSession(session: SandboxSessionRecord): SandboxSession {
+  return sandboxSessionSchema.parse({
+    id: session.id,
+    roomId: session.roomId,
+    taskId: session.taskId,
+    createdByAgentId: session.createdByAgentId,
+    provider: session.provider,
+    status: session.status,
+    workdir: session.workdir,
+    previewUrl: session.previewUrl,
+    createdAt: session.createdAt.toISOString(),
+    updatedAt: session.updatedAt.toISOString(),
+    metadata: sanitizeRecord(normalizeRecord(session.metadata))
+  });
+}
+
 function serializeRoomAgent(
   roomId: string,
   agent: AgentRecord,
@@ -1327,6 +2243,10 @@ function serializeRoomAgent(
   });
 }
 
+function getAgentOwnerUserId(agent: RoomAgent): string | null {
+  return getString(agent.metadata, "pairedByUserId") ?? getString(agent.metadata, "ownerUserId");
+}
+
 function serializeApproval(approval: ApprovalRecord, requestPayload?: Record<string, unknown>): ApprovalRequest {
   const approvalPayload = readNestedRecord(requestPayload, "approval");
   const payload = readNestedRecord(approvalPayload, "payload") ?? readNestedRecord(requestPayload, "payload") ?? {};
@@ -1345,6 +2265,34 @@ function serializeApproval(approval: ApprovalRecord, requestPayload?: Record<str
     createdAt: approval.createdAt.toISOString(),
     decidedAt: approval.decidedAt?.toISOString() ?? null,
     decidedByUserId: approval.decidedByUserId
+  });
+}
+
+function serializeAgentToolCall(toolCall: AgentToolCallRecord): RoomToolCall {
+  return {
+    id: toolCall.id,
+    roomId: toolCall.roomId,
+    taskId: toolCall.taskId,
+    artifactId: toolCall.artifactId,
+    approvalId: toolCall.approvalId,
+    agentId: toolCall.agentId,
+    toolName: toolCall.toolName,
+    status: toolCall.status,
+    arguments: sanitizeRecord(normalizeRecord(toolCall.arguments)),
+    result: toolCall.result ? sanitizeRecord(normalizeRecord(toolCall.result)) : null,
+    errorCode: toolCall.errorCode,
+    errorMessage: toolCall.errorMessage,
+    startedAt: toolCall.startedAt.toISOString(),
+    finishedAt: toolCall.finishedAt?.toISOString() ?? null,
+    durationMs: toolCall.durationMs
+  };
+}
+
+function summarizeToolResult(result: McpToolResult): Record<string, unknown> {
+  return sanitizeRecord({
+    keys: Object.keys(result.structuredContent),
+    structuredContent: result.structuredContent,
+    isError: result.isError ?? false
   });
 }
 
@@ -1486,6 +2434,16 @@ function optionalNumber(value: unknown): number | undefined {
   return value;
 }
 
+function requiredNumber(value: unknown): number {
+  const number = optionalNumber(value);
+
+  if (number === undefined) {
+    throw new RoomMcpHttpError(-32602, "argument must be a number.");
+  }
+
+  return number;
+}
+
 function assertRecord(value: unknown, path: string): Record<string, unknown> {
   if (!isRecord(value)) {
     throw new RoomMcpHttpError(-32602, `${path} must be an object.`);
@@ -1510,6 +2468,23 @@ function requiredRecord(value: unknown, path: string): Record<string, unknown> {
   return value;
 }
 
+function requiredPreviewFiles(value: unknown): PreviewFile[] {
+  if (!Array.isArray(value)) {
+    throw new RoomMcpHttpError(-32602, "files must be an array.");
+  }
+
+  return value.map((file, index) => {
+    if (!isRecord(file)) {
+      throw new RoomMcpHttpError(-32602, `files.${index} must be an object.`);
+    }
+
+    return {
+      path: assertString(file.path, `files.${index}.path`),
+      content: assertString(file.content, `files.${index}.content`)
+    };
+  });
+}
+
 function optionalRecord(value: unknown): Record<string, unknown> | null {
   if (value === undefined || value === null) {
     return null;
@@ -1532,6 +2507,18 @@ function readNestedRecord(record: Record<string, unknown> | null | undefined, ke
 
 function normalizeRecord(value: unknown): Record<string, unknown> {
   return isRecord(value) ? value : {};
+}
+
+function requiredSandboxProvider(provider: string): SandboxProvider {
+  if (provider === "LOCAL_MOCK" || provider === "E2B" || provider === "VERCEL" || provider === "CUSTOM") {
+    return provider;
+  }
+
+  throw new RoomMcpHttpError(-32602, "provider must be LOCAL_MOCK, E2B, VERCEL, or CUSTOM.");
+}
+
+function buildMockPreviewUrl(sessionId: string, port: number): string {
+  return `https://preview.local/${sessionId}/${port}`;
 }
 
 function getString(record: Record<string, unknown> | null | undefined, key: string): string | null {

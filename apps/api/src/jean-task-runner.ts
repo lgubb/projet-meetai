@@ -1,9 +1,12 @@
 import type { FastifyInstance } from "fastify";
 import type { AgentIntent, AgentTaskType } from "@jean/jean-core";
-import type { RealtimeArtifact, RealtimeTask } from "@jean/shared";
+import type { AgentCapability, AgentProvider, BridgeTaskType, RealtimeArtifact, RealtimeTask } from "@jean/shared";
 
 import { createE2BConnector } from "./e2b-connector.js";
 import { createPerplexityConnector } from "./perplexity-connector.js";
+import { createRemoteMcpConnector } from "./remote-mcp-connector.js";
+import { createV0Connector } from "./v0-connector.js";
+import { BridgeConnectionClosedError, BridgeTaskCanceledError } from "./local-agent-bridge.js";
 import { appendTaskLog, patchArtifact, updateArtifactPreviewUrl, updateTaskStatus } from "./room-task-service.js";
 
 type JeanAgentRecord = {
@@ -82,7 +85,7 @@ export async function runJeanTask(
       server.roomEvents.publish(running.event);
     }
 
-    const connector = getConnectors(options).find((candidate) => candidate.canHandle(input));
+    const connector = getConnectors(server, options).find((candidate) => candidate.canHandle(input));
 
     if (!connector) {
       throw new Error("No Jean connector can handle this task.");
@@ -100,11 +103,16 @@ export async function runJeanTask(
       server.roomEvents.publish(completed.event);
     }
   } catch (error) {
+    const wasCanceled = error instanceof BridgeTaskCanceledError;
+    const wasBridgeDisconnected = error instanceof BridgeConnectionClosedError;
     const message = error instanceof Error ? error.message : "Jean task runner failed.";
     const log = await appendTaskLog(server, {
       roomId: input.task.roomId,
       taskId: input.task.id,
-      message: `Erreur Jean: ${message}`
+      message: formatRunnerErrorLog(message, {
+        wasBridgeDisconnected,
+        wasCanceled
+      })
     });
 
     if (log) {
@@ -114,7 +122,7 @@ export async function runJeanTask(
     const failed = await updateTaskStatus(server, {
       roomId: input.task.roomId,
       taskId: input.task.id,
-      status: "FAILED"
+      status: wasCanceled ? "CANCELED" : "FAILED"
     });
 
     if (failed) {
@@ -123,14 +131,24 @@ export async function runJeanTask(
   }
 }
 
-function getConnectors(options: JeanTaskRunnerOptions): AgentConnector[] {
+function getConnectors(server: FastifyInstance, options: JeanTaskRunnerOptions): AgentConnector[] {
   if (options.connectors) {
     return [...options.connectors, localMockConnector];
   }
 
+  const bridgeConnector = createLocalBridgeConnector(server);
+  const remoteMcpConnector = createRemoteMcpConnector();
+  const v0Connector = createV0Connector();
   const e2bConnector = createE2BConnector();
   const perplexityConnector = createPerplexityConnector();
-  const connectors = [e2bConnector, perplexityConnector, localMockConnector].filter(isPresent);
+  const connectors = [
+    bridgeConnector,
+    remoteMcpConnector,
+    v0Connector,
+    e2bConnector,
+    perplexityConnector,
+    localMockConnector
+  ].filter(isPresent);
 
   return connectors;
 }
@@ -139,7 +157,7 @@ async function runConnector(server: FastifyInstance, input: AgentTaskInput, conn
   try {
     await publishConnectorSteps(server, input, connector);
   } catch (error) {
-    if (connector.id === localMockConnector.id) {
+    if (connector.id === localMockConnector.id || connector.id === "local-bridge") {
       throw error;
     }
 
@@ -156,6 +174,64 @@ async function runConnector(server: FastifyInstance, input: AgentTaskInput, conn
 
     await publishConnectorSteps(server, input, localMockConnector);
   }
+}
+
+function createLocalBridgeConnector(server: FastifyInstance): AgentConnector {
+  return {
+    id: "local-bridge",
+    canHandle(input) {
+      const taskType = toBridgeTaskType(input.intent.taskType);
+      const requiredCapability = requiredCapabilityForTaskType(taskType);
+      const provider = requiredCapability ? selectBridgeProvider(server, input, taskType, requiredCapability) : null;
+
+      if (!requiredCapability || (taskType !== "code" && taskType !== "prototype")) {
+        return false;
+      }
+
+      return provider !== null;
+    },
+    async *run(input) {
+      const taskType = toBridgeTaskType(input.intent.taskType);
+      const requiredCapability = requiredCapabilityForTaskType(taskType);
+      const providerPreferences = bridgeProviderPreferencesForTaskType(taskType);
+      const preferredProvider = requiredCapability ? selectBridgeProvider(server, input, taskType, requiredCapability) : null;
+
+      if (!requiredCapability || !preferredProvider) {
+        throw new Error("Local bridge cannot resolve a required task capability.");
+      }
+
+      yield {
+        type: "log",
+        message: `Delegated to ${formatAgentProviderName(preferredProvider)} via jean-bridge.`
+      };
+
+      const result = await server.localAgentBridge.dispatchTask({
+        roomId: input.task.roomId,
+        taskId: input.task.id,
+        artifactId: input.artifact.id,
+        title: input.task.title,
+        description: input.task.description,
+        taskType,
+        artifactType: input.artifact.type,
+        objective: input.intent.description ?? input.intent.commandText ?? input.task.title,
+        mcpHttpUrl: buildRoomMcpUrl(input.task.roomId),
+        requiredCapability,
+        allowedProviders: providerPreferences,
+        preferredProvider,
+        timeoutMs: readBridgeTaskTimeoutMs(),
+        onAccepted: () => {
+          void publishBridgeAcceptedLog(server, input, preferredProvider).catch((error) => {
+            server.log.warn(error, "Failed to persist bridge accepted log.");
+          });
+        }
+      });
+
+      yield {
+        type: "log",
+        message: result.summary ?? `Agent local ${result.agent.name} a terminé la tâche.`
+      };
+    }
+  };
 }
 
 async function publishConnectorSteps(
@@ -200,6 +276,70 @@ async function publishConnectorSteps(
       }
     }
   }
+}
+
+async function publishBridgeAcceptedLog(server: FastifyInstance, input: AgentTaskInput, provider: AgentProvider): Promise<void> {
+  const log = await appendTaskLog(server, {
+    roomId: input.task.roomId,
+    taskId: input.task.id,
+    message: `${formatAgentProviderName(provider)} claimed the task.`
+  });
+
+  if (log) {
+    server.roomEvents.publish(log.event);
+  }
+}
+
+function selectBridgeProvider(
+  server: FastifyInstance,
+  input: AgentTaskInput,
+  taskType: BridgeTaskType,
+  requiredCapability: AgentCapability
+): AgentProvider | null {
+  for (const provider of bridgeProviderPreferencesForTaskType(taskType)) {
+    if (
+      server.localAgentBridge.hasAvailableAgent({
+        roomId: input.task.roomId,
+        requiredCapability,
+        allowedProviders: [provider],
+        preferredProvider: provider
+      })
+    ) {
+      return provider;
+    }
+  }
+
+  return null;
+}
+
+function bridgeProviderPreferencesForTaskType(taskType: BridgeTaskType): AgentProvider[] {
+  if (taskType === "prototype") {
+    return ["LOVABLE", "V0", "CODEX", "CLAUDE_CODE", "MCP", "CUSTOM"];
+  }
+
+  if (taskType === "code") {
+    return ["CODEX", "CLAUDE_CODE", "V0", "LOVABLE", "MCP", "CUSTOM"];
+  }
+
+  return [];
+}
+
+function formatRunnerErrorLog(
+  message: string,
+  flags: {
+    wasBridgeDisconnected: boolean;
+    wasCanceled: boolean;
+  }
+): string {
+  if (flags.wasCanceled) {
+    return `Tâche annulée: ${message}`;
+  }
+
+  if (flags.wasBridgeDisconnected) {
+    return `bridge_disconnected: ${message}`;
+  }
+
+  return `Erreur Jean: ${message}`;
 }
 
 function buildGenerationLog(taskType: AgentTaskType | null): string {
@@ -315,10 +455,75 @@ function extractResearchTopic(value: string): string {
 function formatConnectorName(connectorId: string): string {
   const labels: Record<string, string> = {
     e2b: "E2B",
-    perplexity: "Perplexity"
+    "local-bridge": "jean-bridge",
+    perplexity: "Perplexity",
+    "remote-mcp": "Remote MCP",
+    v0: "v0"
   };
 
   return labels[connectorId] ?? connectorId;
+}
+
+function formatAgentProviderName(provider: AgentProvider): string {
+  const labels: Record<AgentProvider, string> = {
+    CLAUDE_CODE: "Claude Code",
+    CODEX: "Codex Local",
+    CUSTOM: "Custom Agent",
+    E2B: "E2B",
+    LOVABLE: "Lovable",
+    MCP: "MCP Agent",
+    NATIVE: "Jean",
+    PERPLEXITY: "Perplexity",
+    V0: "v0"
+  };
+
+  return labels[provider];
+}
+
+function toBridgeTaskType(taskType: AgentTaskType | null): BridgeTaskType {
+  if (taskType === "research" || taskType === "code" || taskType === "prototype" || taskType === "doc") {
+    return taskType;
+  }
+
+  return "unknown";
+}
+
+function requiredCapabilityForTaskType(taskType: BridgeTaskType): AgentCapability | null {
+  if (taskType === "code") {
+    return "CODE_GENERATION";
+  }
+
+  if (taskType === "prototype") {
+    return "PROTOTYPING";
+  }
+
+  if (taskType === "doc") {
+    return "ARTIFACT_GENERATION";
+  }
+
+  if (taskType === "research") {
+    return "RESEARCH";
+  }
+
+  return null;
+}
+
+function buildRoomMcpUrl(roomId: string): string {
+  const apiUrl = process.env.WORKROOM_API_URL ?? `http://127.0.0.1:${process.env.PORT ?? "3001"}`;
+
+  return new URL(`/rooms/${roomId}/mcp`, apiUrl).toString();
+}
+
+function readBridgeTaskTimeoutMs(): number | undefined {
+  const rawValue = process.env.WORKROOM_BRIDGE_TASK_TIMEOUT_MS;
+
+  if (!rawValue) {
+    return undefined;
+  }
+
+  const parsedValue = Number(rawValue);
+
+  return Number.isInteger(parsedValue) && parsedValue > 0 ? parsedValue : undefined;
 }
 
 function isPresent<T>(value: T | null | undefined): value is T {

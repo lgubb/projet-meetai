@@ -8,6 +8,7 @@ export type RoomAgentTokenClaims = {
   roomId: string;
   agentId: string;
   sessionId: string;
+  ownerUserId: string | null;
   issuedAt: string;
   expiresAt: string;
 };
@@ -19,6 +20,7 @@ export function issueRoomAgentToken(input: {
   roomId: string;
   agentId: string;
   sessionId: string;
+  ownerUserId?: string | null;
   now?: Date;
 }): string {
   const issuedAt = input.now ?? new Date();
@@ -26,6 +28,7 @@ export function issueRoomAgentToken(input: {
     roomId: input.roomId,
     agentId: input.agentId,
     sessionId: input.sessionId,
+    ownerUserId: input.ownerUserId ?? null,
     issuedAt: issuedAt.toISOString(),
     expiresAt: new Date(issuedAt.getTime() + tokenTtlMs).toISOString()
   };
@@ -82,7 +85,14 @@ function parseClaims(payload: string): RoomAgentTokenClaims {
       typeof parsed.issuedAt === "string" &&
       typeof parsed.expiresAt === "string"
     ) {
-      return parsed as RoomAgentTokenClaims;
+      return {
+        roomId: parsed.roomId,
+        agentId: parsed.agentId,
+        sessionId: parsed.sessionId,
+        ownerUserId: typeof parsed.ownerUserId === "string" ? parsed.ownerUserId : null,
+        issuedAt: parsed.issuedAt,
+        expiresAt: parsed.expiresAt
+      };
     }
   } catch {
     unauthorized("Invalid room agent token.");

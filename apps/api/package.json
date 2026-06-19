@@ -8,7 +8,7 @@
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc --noEmit",
     "lint": "eslint . --max-warnings=0",
-    "test": "WORKROOM_AUTH_MODE=dev node --test --import tsx src/auth.test.ts src/shared-import.test.ts src/routes.test.ts"
+    "test": "WORKROOM_AUTH_MODE=dev node --test --import tsx src/auth.test.ts src/shared-import.test.ts src/remote-mcp-connector.test.ts src/v0-connector.test.ts src/routes.test.ts"
   },
   "dependencies": {
     "@clerk/fastify": "^3.1.33",
